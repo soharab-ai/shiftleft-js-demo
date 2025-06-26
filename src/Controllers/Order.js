@@ -12,12 +12,67 @@ class Order {
     // Weak encryption
     const desCipher = crypto.createCipheriv('des', encryptionKey);
     return desCipher.update(secretText, 'utf8', 'hex');
-  }
+/**
+ * Decrypts data using AES-256-GCM with proper key management and validation
+ * @param {Buffer} encryptedText - The encrypted data
+ * @param {Buffer} iv - Initialization vector (16 bytes)
+ * @param {Buffer} authTag - Authentication tag for GCM mode
+ * @param {string} keyVersion - Version identifier for the encryption key
+ * @returns {Buffer} - The decrypted data
+ */
+async decryptData(encryptedText, iv, authTag, keyVersion = 'current') {
+  try {
+    // Validate inputs to ensure security
+    if (!Buffer.isBuffer(encryptedText) || !Buffer.isBuffer(iv) || !Buffer.isBuffer(authTag)) {
+      throw new Error('Invalid input format');
+    }
+    
+    if (iv.length !== 16) {
+      throw new Error('IV must be 16 bytes for AES-256-GCM');
+    }
 
-  decryptData(encryptedText) {
-    const desCipher = crypto.createDecipheriv('des', encryptionKey);
-    return desCipher.update(encryptedText);
+    // Retrieve encryption key from secure vault instead of using a hardcoded key
+    // Implementation of key rotation - use keyVersion to fetch the appropriate key
+    const keyVaultName = process.env.KEY_VAULT_NAME;
+    const keyVaultUrl = `https://${keyVaultName}.vault.azure.net`;
+    const credential = new DefaultAzureCredential();
+    const secretClient = new SecretClient(keyVaultUrl, credential);
+    
+    const secretName = `encryption-key-${keyVersion}`;
+    const secretResponse = await secretClient.getSecret(secretName);
+    
+    // Apply key derivation using PBKDF2 to strengthen the key
+    const salt = process.env.KEY_DERIVATION_SALT || 'default-salt-change-me';
+    const derivedKey = crypto.pbkdf2Sync(
+      secretResponse.value,
+      salt,
+      100000, // 100,000 iterations for key stretching
+      32, // 32 bytes = 256 bits for AES-256
+      'sha512'
+    );
+    
+    // Validate key length for AES-256
+    if (derivedKey.length !== 32) {
+      throw new Error('Invalid key length for AES-256');
+    }
+
+    // Create decipher using AES-256-GCM (authenticated encryption)
+    const decipher = crypto.createDecipheriv('aes-256-gcm', derivedKey, iv);
+    
+    // Set authentication tag for authenticated encryption
+    decipher.setAuthTag(authTag);
+    
+    // Proper decryption with both update and final methods
+    const decryptedData = Buffer.concat([decipher.update(encryptedText), decipher.final()]);
+    
+    return decryptedData;
+  } catch (error) {
+    // Added error handling without revealing sensitive details
+    console.error('Decryption failed:', error.message);
+    throw new Error('Decryption failed');
   }
+}
+
   addToOrder(req, res) {
     const order = req.body;
     console.log(req.body);
