@@ -11,15 +11,52 @@ class Login {
   }
 
   encryptData(secretText) {
-    const crypto = require('crypto');
-
-    // Weak encryption
-    const desCipher = crypto.createCipheriv(
-      'des',
-      "This is a simple password, don't guess it"
-    );
-    return desCipher.write(secretText, 'utf8', 'hex'); // BAD: weak encryption
-  }
+encryptData(secretText, userPassword = null) {
+    try {
+        // FIXED: Implemented proper key management using a KDF (PBKDF2)
+        // Either use user password or a secure application master key
+        const salt = crypto.randomBytes(16);
+        
+        // FIXED: Derive key from password using PBKDF2 instead of returning raw key
+        let key;
+        if (userPassword) {
+            // Generate key from user password if provided
+            key = crypto.pbkdf2Sync(userPassword, salt, 100000, 32, 'sha512');
+        } else {
+            // Use application master key with KDF
+            // FIXED: Master key should be stored in environment variables or secure vault
+            const masterKey = process.env.MASTER_ENCRYPTION_KEY || config.getMasterKey();
+            key = crypto.pbkdf2Sync(masterKey, salt, 100000, 32, 'sha512');
+        }
+        
+        const iv = crypto.randomBytes(16); // 128 bits for GCM mode
+        
+        // FIXED: Used modern encryption algorithm with proper parameters
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        
+        let encrypted = cipher.update(secretText, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        
+        const authTag = cipher.getAuthTag();
+        
+        // FIXED: Store key version for future algorithm changes and key rotation
+        const keyVersion = config.getCurrentKeyVersion();
+        
+        // FIXED: Never return the actual encryption key
+        return {
+            encryptedData: encrypted,
+            iv: iv.toString('hex'),
+            authTag: authTag.toString('hex'),
+            salt: salt.toString('hex'),
+            keyVersion: keyVersion,
+            algorithm: 'aes-256-gcm'
+        };
+    } catch (error) {
+        // FIXED: Added proper error handling to prevent information leakage
+        console.error('Encryption error occurred');
+        throw new Error('Failed to encrypt data. Please try again later.');
+    }
+}
 
   async handleLogin(req, res, client, data) {
     const { username, password, keeponline } = data;
