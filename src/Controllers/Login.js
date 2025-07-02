@@ -10,14 +10,100 @@ class Login {
     res.redirect('/login');
   }
 
-  encryptData(secretText) {
-    const crypto = require('crypto');
+encryptData(secretText) {
+    // Implement secure vault system
+    const getEncryptionCredentials = async () => {
+      try {
+        // Use regular in-memory cache instead of SecureHeap
+        if (!this.keyCache) {
+          this.keyCache = new Map();
+        }
 
-    // Weak encryption
-    const desCipher = crypto.createCipheriv(
-      'des',
-      "This is a simple password, don't guess it"
-    );
+        // Try to get credentials from cache first
+        const cachedCredentials = this.keyCache.get('encryptionCredentials');
+        if (cachedCredentials && cachedCredentials.expiry > Date.now()) {
+          return cachedCredentials.value;
+        }
+
+        // If not in cache, fetch from vault system
+        const vaultConfig = {
+          apiVersion: 'v1',
+          endpoint: process.env.VAULT_ENDPOINT || 'http://127.0.0.1:8200',
+          token: process.env.VAULT_TOKEN
+        };
+        
+        const vaultClient = vault(vaultConfig);
+        const secretResponse = await vaultClient.read('secret/encryption/credentials');
+        
+        // Fall back to env vars if vault not available
+        const masterKey = secretResponse?.data?.masterKey || process.env.MASTER_KEY;
+        const salt = secretResponse?.data?.salt || process.env.KEY_SALT;
+        const iv = secretResponse?.data?.iv || process.env.ENCRYPTION_IV;
+        const keyVersion = secretResponse?.data?.keyVersion || process.env.KEY_VERSION || 'current';
+        
+        if (!masterKey || !salt || !iv) {
+          throw new Error('Encryption credentials not properly configured');
+        }
+        
+        // Implement key derivation using PBKDF2
+        const derivedKey = crypto.pbkdf2Sync(
+          masterKey, 
+          Buffer.from(salt, 'hex'), 
+          100000, // 100,000 iterations for security
+          32, // 256 bits for AES-256
+          'sha256'
+        );
+        
+        const credentials = { 
+          key: derivedKey, 
+          iv: Buffer.from(iv, 'hex'),
+          keyVersion
+        };
+        
+        // Store in memory cache with expiration
+        const expiry = Date.now() + 3600000; // Expire after 1 hour
+        this.keyCache.set('encryptionCredentials', {
+          value: credentials,
+          expiry: expiry
+        });
+        
+        return credentials;
+      } catch (error) {
+        console.error('Error retrieving encryption credentials:', error.message);
+        throw new Error('Failed to retrieve encryption credentials');
+      }
+    };
+    
+    // Use async/await pattern for vault interaction
+    return (async () => {
+      try {
+        // Get credentials with key rotation support
+        const { key, iv, keyVersion } = await getEncryptionCredentials();
+        
+        // Use a strong authenticated encryption algorithm (AES-256-GCM)
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        
+        // Encrypt the data
+        let encrypted = cipher.update(secretText, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        
+        // Get authentication tag for verification during decryption
+        const authTag = cipher.getAuthTag().toString('hex');
+        
+        // Include key version for proper decryption during rotation
+        return { 
+          encrypted, 
+          authTag, 
+          iv: iv.toString('hex'), 
+          keyVersion 
+        };
+      } catch (error) {
+        console.error('Encryption failed:', error.message);
+        throw new Error('Failed to encrypt data');
+      }
+    })();
+  }
+
     return desCipher.write(secretText, 'utf8', 'hex'); // BAD: weak encryption
   }
 
