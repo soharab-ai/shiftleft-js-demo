@@ -9,11 +9,81 @@ class Order {
     return key;
   }
   encryptData(secretText) {
-    // Weak encryption
-    const desCipher = crypto.createCipheriv('des', encryptionKey);
-    return desCipher.update(secretText, 'utf8', 'hex');
-/**
- * Decrypts data using AES-256-GCM with proper key management and validation
+encryptData(secretText, additionalData = '') {
+    try {
+        // Improved key management with PBKDF2 (derive key from base secret)
+        const salt = crypto.randomBytes(16);
+        const currentKeyVersion = 1; // Track key version for rotation
+        
+        // Generate a derived key using PBKDF2 (100,000 iterations for strength)
+        const derivedKey = crypto.pbkdf2Sync(
+            process.env.BASE_ENCRYPTION_SECRET || 'fallback-secret-key-for-development-only',
+            salt,
+            100000,
+            32, // 256 bits
+            'sha512'
+        );
+        
+        // Generate secure IV for AES-256-GCM
+        const iv = crypto.randomBytes(16);
+        
+        // Create cipher with derived key
+        const cipher = crypto.createCipheriv('aes-256-gcm', derivedKey, iv);
+        
+        // Add additional authenticated data if provided (AEAD)
+        if (additionalData) {
+            cipher.setAAD(Buffer.from(additionalData));
+        }
+        
+        // Add secure padding to prevent length-based attacks
+        const paddedText = addSecurePadding(secretText);
+        
+        // Encrypt the data
+        let encrypted = cipher.update(paddedText, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        
+        // Get authentication tag for integrity verification
+        const authTag = cipher.getAuthTag().toString('hex');
+        
+        // Return all components needed for decryption with key version for rotation
+        return {
+            algorithm: 'aes-256-gcm', // For cryptographic agility
+            keyVersion: currentKeyVersion,
+            salt: salt.toString('hex'),
+            iv: iv.toString('hex'),
+            encryptedData: encrypted,
+            authTag: authTag
+        };
+    } catch (error) {
+        // Secure error handling to prevent information leakage
+        console.error('Encryption error occurred');
+        throw new Error('Failed to encrypt data');
+    }
+}
+
+// Helper function for secure padding
+function addSecurePadding(text) {
+    // Add PKCS#7 style padding
+    const blockSize = 16;
+    const padLength = blockSize - (text.length % blockSize);
+    return text + '\0'.repeat(padLength) + String.fromCharCode(padLength);
+}
+
+// Example of how to implement key rotation (to be used in a complete system)
+function getEncryptionKey(keyVersion) {
+    // This would retrieve the appropriate key based on version
+    // In a production system, this would interface with a secure key storage
+    // such as an HSM (Hardware Security Module) or a key vault service
+    switch(keyVersion) {
+        case 1:
+            return process.env.ENCRYPTION_KEY_V1;
+        case 2:
+            return process.env.ENCRYPTION_KEY_V2;
+        default:
+            return process.env.CURRENT_ENCRYPTION_KEY;
+    }
+}
+
  * @param {Buffer} encryptedText - The encrypted data
  * @param {Buffer} iv - Initialization vector (16 bytes)
  * @param {Buffer} authTag - Authentication tag for GCM mode
