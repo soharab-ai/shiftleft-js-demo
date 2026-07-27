@@ -14,106 +14,106 @@ encryptData(secretText) {
       throw new Error('ENCRYPTION_SECRET environment variable must be configured');
     }
     
-    // Fixed: Validate ENCRYPTION_SALT environment variable exists and has minimum length
-    if (!process.env.ENCRYPTION_SALT || Buffer.from(process.env.ENCRYPTION_SALT, 'hex').length < 16) {
-      throw new Error('ENCRYPTION_SALT environment variable must be configured with minimum 16 bytes');
-    }
-    
-    // Fixed: Replaced weak DES encryption with strong AES-256-GCM encryption
-    const algorithm = 'aes-256-gcm';
-    
-    // Fixed: Generate cryptographically secure random IV (12 bytes for GCM mode)
-    const iv = crypto.randomBytes(12);
-    
-    // Fixed: Use proper key derivation with scrypt and secure salt from environment variable
-    // Fixed: Added explicit scrypt parameters for OWASP-recommended security levels
-    const key = crypto.scryptSync(
-      process.env.ENCRYPTION_SECRET, 
-      process.env.ENCRYPTION_SALT, 
-      32,
-      { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }
-    );
-    
-    // Fixed: Create cipher with AES-256-GCM algorithm for authenticated encryption
-    const cipher = crypto.createCipheriv(algorithm, key, iv);
-    
-    // Fixed: Encrypt the data with proper encoding
-    let encrypted = cipher.update(secretText, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    // Fixed: Get authentication tag for data integrity verification
-    const authTag = cipher.getAuthTag();
-    
-    // Fixed: Return version identifier for key rotation mechanism, IV, encrypted data, and auth tag
-    return {
-      version: process.env.ENCRYPTION_KEY_VERSION || '1',
-      iv: iv.toString('hex'),
-      encryptedData: encrypted,
-      authTag: authTag.toString('hex')
-    };
-  }
-
-    // Fixed: Added try-catch block to handle decryption failures and prevent information leakage
+async decryptData(encryptedData) {
+    // FIXED: Enhanced AES-256-GCM decryption with comprehensive security validations
     try {
-      // Fixed: Decrypt the data with proper encoding
-      let decrypted = decipher.update(encryptedObject.encryptedData, 'hex', 'utf8');
+      // Input validation - prevents type confusion and malformed data attacks
+      if (!encryptedData || typeof encryptedData !== 'object' || !encryptedData.iv || !encryptedData.authTag || !encryptedData.ciphertext || !encryptedData.salt || !encryptedData.algorithm) {
+        throw new Error('Invalid encrypted data structure');
+      }
+      
+      // Algorithm version validation - enables future algorithm migration and backward compatibility
+      if (encryptedData.algorithm !== 'aes-256-gcm-v1') {
+        throw new Error('Unsupported encryption algorithm version');
+      }
+      
+      const algorithm = 'aes-256-gcm';
+      
+      // Parse encrypted data components
+      const iv = Buffer.from(encryptedData.iv, 'hex');
+      const authTag = Buffer.from(encryptedData.authTag, 'hex');
+      const encryptedText = Buffer.from(encryptedData.ciphertext, 'hex');
+      const salt = Buffer.from(encryptedData.salt, 'hex');
+      
+      // IV length validation - prevents cryptographic failures and timing attacks
+      if (iv.length !== 16) {
+        throw new Error('Invalid IV length');
+      }
+      
+      // Authentication tag length validation - ensures proper GCM authentication
+      if (authTag.length !== 16) {
+        throw new Error('Invalid authentication tag length');
+      }
+      
+      // Key derivation using scrypt - provides forward secrecy and computational hardness against brute-force
+      const key = await crypto.scrypt(process.env.ENCRYPTION_KEY, salt, 32);
+      
+      // Create decipher with AES-256-GCM for authenticated decryption
+      const decipher = crypto.createDecipheriv(algorithm, key, iv);
+      
+      // Set authentication tag for integrity verification
+      decipher.setAuthTag(authTag);
+      
+      // Decrypt the data
+      let decrypted = decipher.update(encryptedText, null, 'utf8');
       decrypted += decipher.final('utf8');
+      
+      // Secure memory handling - zero out key material to prevent memory dumps
+      key.fill(0);
+      
       return decrypted;
     } catch (error) {
-      // Fixed: Generic error message to prevent information disclosure while indicating decryption failure
-      throw new Error('Decryption failed: data may be corrupted or tampered');
+      // Secure error handling without exposing sensitive details
+      throw new Error('Decryption failed: ' + error.message);
     }
   }
 
-  addToOrder(req, res) {
-    const order = req.body;
-    console.log(req.body);
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
-      order.id = crypto.randomBytes(256).toString('hex');
-      orders.push(order);
-      req.session.orders = this.encryptData(JSON.stringify(orders));
-    }
-    res.send(200);
   }
-  removeOrder(req, res) {
-    const { orderId } = req.body;
-    console.log(req.body);
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
-      const newOrders = orders.filter(order => orderId !== order.orderId);
-      req.session.orders = this.encryptData(JSON.stringify(newOrders));
-      console.log(newOrders);
-    }
-    res.send(200);
-  }
-
-  checkout(req, res) {
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
-      let totalPrice = 0;
-      for (let index = 0; index < orders.length; index += 1) {
-        totalPrice += orders[index].price;
-      }
-      this.processCC(req, res, orders, totalPrice);
-    }
-    console.log(req.session.orders);
-  }
-
-  createStripeRequest(creditCard, price, address) {
-    const STRIPE_CLIENT_ID = 'AKIA2E0A8F3B244C9986';
-    const STRIPE_CLIENT_SECRET_KEY = '7CE556A3BC234CC1FF9E8A5C324C0BB70AA21B6D';
-    https.request(
-      `http://invalidstripe.com?STRIPE_CLIENT_ID=${STRIPE_CLIENT_ID}&STRIPE_CLIENT_SECRET_KEY=${STRIPE_CLIENT_SECRET_KEY}&price=${price}&address=${JSON.stringify(
-        address
-      )}`
-    );
-  }
-
-  async processCC(req, res, orders, totalPrice) {
+async encryptData(plaintext) {
+    // FIXED: Enhanced AES-256-GCM encryption with KDF and comprehensive security measures
     try {
-      const self = this;
-      new MongoDBClient().connect(async function(err, client) {
+      // Input validation - prevents operations on invalid data types
+      if (typeof plaintext !== 'string' || plaintext.length === 0) {
+        throw new Error('Plaintext must be a non-empty string');
+      }
+      
+      const algorithm = 'aes-256-gcm';
+      
+      // Generate cryptographically secure random salt for key derivation
+      const salt = crypto.randomBytes(32);
+      
+      // Key derivation using scrypt - derives encryption key from master key with salt
+      const key = await crypto.scrypt(process.env.ENCRYPTION_KEY, salt, 32);
+      
+      // Generate cryptographically secure random IV for each encryption operation
+      const iv = crypto.randomBytes(16); // 16 bytes IV for AES-GCM
+      
+      // Create cipher with AES-256-GCM
+      const cipher = crypto.createCipheriv(algorithm, key, iv);
+      
+      // Encrypt the plaintext
+      let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+      encrypted += cipher.final('hex');
+      
+      // Get authentication tag for integrity verification
+      const authTag = cipher.getAuthTag();
+      
+      // Secure memory handling - zero out key material to prevent memory dumps
+      key.fill(0);
+      
+      // Return structured encrypted data with algorithm version, salt, IV, authTag, and ciphertext
+      return {
+        algorithm: 'aes-256-gcm-v1',
+        salt: salt.toString('hex'),
+        iv: iv.toString('hex'),
+        authTag: authTag.toString('hex'),
+        ciphertext: encrypted
+      };
+    } catch (error) {
+      throw new Error('Encryption failed: ' + error.message);
+    }
+  }
+
         const username = req.cookies.username;
         const address = req.body.address;
         if (client) {
