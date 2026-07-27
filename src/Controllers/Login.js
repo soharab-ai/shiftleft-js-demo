@@ -1,84 +1,85 @@
-// SECURITY FIX: Utility function to sanitize log inputs and prevent log forging using validator library
-function sanitizeForLog(input) {
-  if (!input) return '[EMPTY]';
-  // Use validator.escape() for industry-standard HTML entity encoding
-  const escaped = validator.escape(String(input));
-  return escaped.substring(0, 50); // Limit length to prevent log flooding
+// SECURITY FIX: Helper method to sanitize sensitive data before logging with deep traversal
+// This prevents exposure of PII and sensitive information in application logs
+sanitizeForLogging(obj, depth = 0) {
+  const MAX_DEPTH = 5;
+  // SECURITY FIX: Pattern-based matching for better maintainability and coverage
+  const SENSITIVE_PATTERNS = /password|credit|passport|ssn|address|zip|token|secret|key/i;
+  
+  if (depth > MAX_DEPTH || typeof obj !== 'object' || obj === null) {
+    return obj;
+  }
+  
+  // SECURITY FIX: Handle both arrays and objects for comprehensive sanitization
+  const sanitized = Array.isArray(obj) ? [] : {};
+  for (const [key, value] of Object.entries(obj)) {
+    // SECURITY FIX: Use regex pattern matching to catch variations of sensitive field names
+    if (SENSITIVE_PATTERNS.test(key)) {
+      sanitized[key] = '[REDACTED]';
+    } else if (typeof value === 'object' && value !== null) {
+      // SECURITY FIX: Deep traversal to sanitize nested sensitive data
+      sanitized[key] = this.sanitizeForLogging(value, depth + 1);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
 }
 
-// SECURITY FIX: Hash username for logging to prevent sensitive data exposure
-function hashUsernameForLog(username) {
-  const LOG_SALT = process.env.LOG_SALT || 'default-salt-change-in-production';
-  return crypto.createHash('sha256').update(username + LOG_SALT).digest('hex').substring(0, 16);
-async encryptData(secretText) {
-    const crypto = require('crypto');
-    const util = require('util');
-    
-    // FIX: Input validation and size limits to prevent resource exhaustion attacks
-    if (!secretText || typeof secretText !== 'string' || secretText.length > 1048576) {
-        throw new Error('Invalid input: must be a string under 1MB');
-    }
-    
-    // FIX: Algorithm agility through configuration with allowlist validation
-    const ALLOWED_ALGORITHMS = ['aes-256-gcm', 'aes-256-ccm'];
-    const CRYPTO_ALGORITHM = process.env.CRYPTO_ALGORITHM || 'aes-256-gcm';
-    if (!ALLOWED_ALGORITHMS.includes(CRYPTO_ALGORITHM)) {
-        throw new Error('Unsupported algorithm');
-    }
-    
-    // FIX: Use environment variables or a secure key management system instead of hardcoded password
-    const password = process.env.ENCRYPTION_PASSWORD || this.getSecurePasswordFromKMS();
-    
-    if (!password) {
-        throw new Error('Encryption password not configured');
-    }
-    
-    // FIX: Generate random salt for proper key derivation
-    const salt = crypto.randomBytes(16);
-    
-    // FIX: Async PBKDF2 to prevent blocking event loop and DoS vulnerabilities
-    const pbkdf2 = util.promisify(crypto.pbkdf2);
-    const key = await pbkdf2(password, salt, 100000, 32, 'sha256');
-    
-    // FIX: Generate a random IV for each encryption operation to ensure semantic security
-    const iv = crypto.randomBytes(16);
-    
-    // FIX: Use AES-256-GCM instead of DES for strong authenticated encryption
-    const cipher = crypto.createCipheriv(CRYPTO_ALGORITHM, key, iv);
-    
-    // FIX: Encrypt the data using secure AES-256-GCM algorithm
-    let encrypted = cipher.update(secretText, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    // FIX: Get authentication tag for integrity verification
-    const authTag = cipher.getAuthTag();
-    
-    // FIX: Key rotation mechanism for cryptographic agility
-    const keyVersion = this.getCurrentKeyVersion();
-    
-    // FIX: Memory zeroing for sensitive data to prevent memory scraping attacks
-    key.fill(0);
-    
-    // FIX: Return encrypted data with salt, iv, authTag, and keyVersion required for decryption and verification
-    return {
-        encrypted: encrypted,
-        salt: salt.toString('hex'),
-        iv: iv.toString('hex'),
-        authTag: authTag.toString('hex'),
-        keyVersion: keyVersion
-    };
+sanitizeLogInput(input) {
+  return String(input).replace(/[\n\r\u0000\u001b]/g, '');
 }
 
-          // SECURITY FIX: Log with hashed username and anonymized IP instead of plain username
-async decryptData(encryptedData) {
-    const crypto = require('crypto');
-    const util = require('util');
     
-    // FIX: Input validation for structure and format to prevent malformed data attacks
-    if (!encryptedData || !encryptedData.encrypted || !encryptedData.salt || 
-        !encryptedData.iv || !encryptedData.authTag) {
-        throw new Error('Malformed encrypted data: missing required fields');
+async handleLogin(req, res, client, data) {
+    const { username, password, keeponline } = data;
+    try {
+      // DB Query
+      const db = client.db('tarpit', { returnNonCachedInstance: true });
+      if (!db) {
+        this.loginFailed(req, res, data);
+        return;
+      }
+      const result = await db.collection('users').findOne({
+        username,
+        password
+      });
+      if (result) {
+        const user = {
+          fname: result.fname,
+          lname: result.lname,
+          passportnum: result.passportnum,
+          address1: result.address1,
+          address2: result.address2,
+          zipCode: result.zipCode
+        };
+        const creditInfo = encryptData(result.creditCard);
+        
+        // SECURITY FIX: Sanitize username to prevent log forging attacks (newline injection)
+        logger.info(this.sanitizeLogInput(`Login successful for user: ${username}`));
+        // SECURITY FIX: Do NOT log credit card information (even encrypted) or any PII data
+        
+        // SECURITY FIX: Add secure cookie flags to prevent XSS and MITM attacks
+        res.cookie('username', result.username, { httpOnly: true, secure: true, sameSite: 'strict' });
+        res.cookie('maxAge', 864000);
+        res.cookie('cc', creditInfo, { httpOnly: true, secure: true, sameSite: 'strict' });
+
+        req.session.user = JSON.stringify(user);
+        req.session.username = username;
+
+        res.redirect('/');
+      } else {
+        this.loginFailed(req, res, data);
+      }
+    } catch (ex) {
+      // SECURITY FIX: Sanitize exception message to prevent log forging and information disclosure
+      logger.error('Login error occurred', { 
+        error: this.sanitizeLogInput(ex.message || 'Unknown error'),
+        errorCode: ex.code
+      });
+      this.loginFailed(req, res, data);
     }
+  }
+
     
     // FIX: Hex format validation using regex
     const hexRegex = /^[0-9a-f]+$/i;
