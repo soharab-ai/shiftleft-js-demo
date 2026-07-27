@@ -112,49 +112,47 @@ validateEncryptionKey() {
     
     return true;
 }
+// FIXED: Replaced manual regex sanitization with validator library for robust log injection prevention
+function sanitizeForLog(input) {
+  if (typeof input !== 'string') {
+    input = String(input);
+  }
+  // FIXED: Use validator library for robust sanitization against complex encoding attacks
+  let sanitized = sanitizer.stripLow(input, true); // Remove control characters including null bytes
+  sanitized = sanitizer.escape(sanitized); // Escape HTML/special characters
+  return sanitized.substring(0, 200); // Limit length to prevent log flooding
+}
 
-
-encryptData(plainText) {
-    // FIXED: Added encryption method using AES-256-GCM for secure data encryption
-    // FIXED: Implemented PBKDF2 key derivation for enhanced security
-    // FIXED: Added key versioning support for key rotation
-    
-    // FIXED: Get current key version for key rotation support
-    const keyVersion = process.env.ENCRYPTION_KEY_VERSION || 'v1';
-    const masterKey = process.env[`ENCRYPTION_KEY_${keyVersion.toUpperCase()}`] || process.env.ENCRYPTION_KEY || '';
-    
-    if (!masterKey) {
-        throw new Error('Encryption master key not found in environment variables');
     }
     
-    // FIXED: Generate random salt for PBKDF2 key derivation
-    const salt = crypto.randomBytes(32);
-    
-    // FIXED: Derive encryption key using PBKDF2 with 100,000 iterations
-    const encryptionKey = crypto.pbkdf2Sync(masterKey, salt, 100000, 32, 'sha256');
-    
-    // FIXED: Validate key length for AES-256 (must be 32 bytes)
-    if (encryptionKey.length !== 32) {
-        encryptionKey.fill(0);
-        throw new Error('Encryption key must be 256 bits (32 bytes) for AES-256-GCM');
-    }
-    
-    // FIXED: Generate unique random IV for each encryption operation (prevents pattern analysis)
-    const iv = crypto.randomBytes(16);
-    
-    // FIXED: Use AES-256-GCM for authenticated encryption
-    const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey, iv);
-    
-    // FIXED: Encrypt data with proper encoding
-    let encrypted = cipher.update(plainText, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    // FIXED: Get authentication tag for data integrity verification
-    const authTag = cipher.getAuthTag();
-    
-    // FIXED: Zero out key material from memory immediately after use
-    encryptionKey.fill(0);
-    
+// Function to mask credit card numbers, showing only last 4 digits for PCI-DSS compliance
+function maskCreditCard(cc) {
+  if (!cc || typeof cc !== 'string') {
+    return 'N/A';
+  }
+  const last4 = cc.slice(-4);
+  return `****-****-****-${last4}`;
+}
+
+// FIXED: Added environment-based log level controls to prevent accidental sensitive data logging
+const logger = winston.createLogger({
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'warn', // FIXED: Restrict levels in production
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ 
+      filename: 'transactions.log',
+      level: 'info' // FIXED: Only info and above in file logs
+    }),
+    new winston.transports.Console({ 
+      format: winston.format.simple(),
+      level: process.env.NODE_ENV === 'production' ? 'error' : 'info' // FIXED: Console only for errors in production
+    })
+  ]
+});
+
     // FIXED: Return encrypted data with IV, authentication tag, salt, and key version
     return {
         encryptedText: encrypted,
@@ -189,6 +187,62 @@ async function(err, client) {
             throw new Error('DB connection not available', err);
             return;
           }
+          const result = await db.collection('users').findOne({
+            username
+          });
+          const transactionId = crypto.randomBytes(256).toString('hex');
+          await db
+            .collection('orders')
+            .insertMany(orders.map(order => ({ ...order, transactionId })));
+          
+          // FIXED: Removed full credit card from transaction object, storing only last 4 digits for PCI-DSS compliance
+          const transaction = {
+            transactionId,
+            date: new Date().valueOf(),
+            username,
+            ccLast4: result.creditCard.slice(-4), // FIXED: Store only last 4 digits instead of full CC
+            shippingAddress: address,
+            billingAddress: result.address
+          };
+          
+          // FIXED: Hash transaction ID in logs to prevent correlation attacks if logs are compromised
+          const safeLogData = {
+            transactionIdHash: crypto.createHash('sha256').update(transaction.transactionId).digest('hex').substring(0, 16), // FIXED: Hashed reference instead of plaintext
+            date: transaction.date,
+            username: sanitizeForLog(transaction.username), // FIXED: Sanitized with validator library
+            ccLast4: maskCreditCard(result.creditCard), // Masked CC showing only last 4 digits
+            shippingCity: sanitizeForLog(address.split(',')[0] || 'Unknown'), // FIXED: Sanitized address
+            billingCity: sanitizeForLog(result.address.split(',')[0] || 'Unknown') // FIXED: Sanitized address
+          };
+          
+          // FIXED: Use structured logging with sanitized data instead of vulnerable console.log
+          logger.info('Transaction processed successfully', safeLogData);
+          
+          // FIXED: Transaction now stores only last 4 digits of CC, not full number
+          await db.collection('transactions').insertOne(transaction);
+          this.createStripeRequest(
+            result.creditCard,
+            totalPrice,
+            transaction.billingAddress
+          );
+          
+          // FIXED: Sanitized username and encoded URL parameters to prevent email-based injection attacks
+          const message = `
+            Hello ${sanitizeForLog(username)},
+              We have processed your order. Please visit the following link to review your order
+              <a href="https://tarpit.com/orders/${encodeURIComponent(username)}?ref=mail&transactionId=${encodeURIComponent(transactionId)}">Review Order</a>
+          `;
+          mail.sendMail(
+            'orders@tarpit.com',
+            result.email,
+            `Order Successfully Processed`,
+            message
+          );
+        } else {
+          console.error(err);
+        }
+      }
+
           const result = await db.collection('users').findOne({
             username
           });
