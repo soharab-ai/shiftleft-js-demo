@@ -66,55 +66,9 @@ async decryptData(encryptedData) {
       // Secure error handling without exposing sensitive details
       throw new Error('Decryption failed: ' + error.message);
     }
-  }
-
-  }
-async encryptData(plaintext) {
-    // FIXED: Enhanced AES-256-GCM encryption with KDF and comprehensive security measures
-    try {
-      // Input validation - prevents operations on invalid data types
-      if (typeof plaintext !== 'string' || plaintext.length === 0) {
-        throw new Error('Plaintext must be a non-empty string');
-      }
-      
-      const algorithm = 'aes-256-gcm';
-      
-      // Generate cryptographically secure random salt for key derivation
-      const salt = crypto.randomBytes(32);
-      
-      // Key derivation using scrypt - derives encryption key from master key with salt
-      const key = await crypto.scrypt(process.env.ENCRYPTION_KEY, salt, 32);
-      
-      // Generate cryptographically secure random IV for each encryption operation
-      const iv = crypto.randomBytes(16); // 16 bytes IV for AES-GCM
-      
-      // Create cipher with AES-256-GCM
-      const cipher = crypto.createCipheriv(algorithm, key, iv);
-      
-      // Encrypt the plaintext
-      let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-      encrypted += cipher.final('hex');
-      
-      // Get authentication tag for integrity verification
-      const authTag = cipher.getAuthTag();
-      
-      // Secure memory handling - zero out key material to prevent memory dumps
-      key.fill(0);
-      
-      // Return structured encrypted data with algorithm version, salt, IV, authTag, and ciphertext
-      return {
-        algorithm: 'aes-256-gcm-v1',
-        salt: salt.toString('hex'),
-        iv: iv.toString('hex'),
-        authTag: authTag.toString('hex'),
-        ciphertext: encrypted
-      };
-    } catch (error) {
-      throw new Error('Encryption failed: ' + error.message);
-    }
-  }
-
-        const username = req.cookies.username;
+async function(err, client) {
+        // SECURITY FIX: Sanitize username from cookies using comprehensive sanitization to prevent log forging
+        const username = sanitizeForLogging(req.cookies.username);
         const address = req.body.address;
         if (client) {
           const db = client.db('tarpit', { returnNonCachedInstance: true });
@@ -122,47 +76,114 @@ async encryptData(plaintext) {
             throw new Error('DB connection not available', err);
             return;
           }
+          // SECURITY FIX: Exclude credit card from database retrieval projection
           const result = await db.collection('users').findOne({
             username
+          }, {
+            projection: { creditCard: 0 }
           });
+          
+          // SECURITY FIX: Retrieve payment token instead of plain-text credit card
+          const paymentToken = result.paymentToken;
           const transactionId = crypto.randomBytes(256).toString('hex');
           await db
             .collection('orders')
             .insertMany(orders.map(order => ({ ...order, transactionId })));
+          
+          // SECURITY FIX: Store only hashed/tokenized credit card data, never plain-text
+          // Complies with PCI-DSS Requirement 3.4 - never store full PAN post-authorization
           const transaction = {
             transactionId,
             date: new Date().valueOf(),
             username,
-            cc: result.creditCard,
+            ccToken: hashSensitiveData(paymentToken), // Store only hash/token
+            ccLast4: paymentToken.slice(-4), // Store last 4 for reference
             shippingAddress: address,
             billingAddress: result.address
           };
-          console.log(transaction);
+          
+          // SECURITY FIX: Never log transaction details containing user data
+          // Eliminate logging entirely in favor of dedicated, access-controlled audit systems
+          // This ensures PCI-DSS compliance and prevents sensitive data exposure in all environments
+          
           await db.collection('transactions').insertOne(transaction);
+          
+          // SECURITY FIX: Use payment token for Stripe processing instead of plain-text CC
           this.createStripeRequest(
-            result.creditCard,
+            paymentToken,
             totalPrice,
-            transaction.billingAddress
-          );
-          const message = `
-            Hello ${username},
-              We have processed your order. Please visit the following link to review your order
-              <a href="https://tarpit.com/orders/${username}?ref=mail&transactionId=${transactionId}}">Review Order</a>
-          `;
-          mail.sendMail(
-            'orders@tarpit.com',
-            result.email,
-            `Order Successfully Processed`,
-            message
-          );
-        } else {
-          console.error(err);
-        }
-      });
-    } catch (ex) {
-      logger.error(ex);
-    }
+// SECURITY FIX: Hash sensitive data with salt before storage
+// Ensures PCI-DSS compliance by never storing plain-text credit card data
+function hashSensitiveData(data) {
+  const hash = crypto.createHash('sha256');
+  hash.update(data + process.env.CC_SALT); // Use environment-specific salt
+  return hash.digest('hex');
+}
+// SECURITY FIX: Helper function to mask credit card numbers for safe logging
+// Shows only last 4 digits to prevent sensitive data exposure in logs
+function maskCreditCard(creditCard) {
+  if (!creditCard || creditCard.length < 4) {
+    return '****';
   }
+  // Show only last 4 digits
+  return `****-****-****-${creditCard.slice(-4)}`;
 }
 
-module.exports = new Order();
+// SECURITY FIX: Comprehensive sanitization to prevent log forging attacks
+// Uses validator library and removes control characters, ANSI escape sequences
+function sanitizeForLogging(input) {
+  if (typeof input !== 'string') {
+    return String(input);
+  }
+  
+  // Use validator library for robust sanitization
+  let sanitized = validator.stripLow(input, true);
+  
+  // Additional comprehensive sanitization
+  sanitized = sanitized
+    // Remove all control characters (ASCII 0-31 and 127)
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    // Remove ANSI escape sequences that could manipulate logs
+    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')
+    // Normalize Unicode to prevent obfuscation attacks
+    .normalize('NFKC')
+    // Limit length to prevent log flooding
+    .substring(0, 200);
+  
+// SECURITY FIX: Pattern-based detection system for comprehensive data sanitization
+// Recursively sanitizes nested objects and detects sensitive data by patterns
+function sanitizeLogData(data) {
+  const sensitivePatterns = {
+    creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g,
+    ssn: /\b\d{3}-\d{2}-\d{4}\b/g,
+    email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g
+  };
+  
+  const sensitiveFieldPatterns = /(?:cc|card|credit|password|pwd|pass|ssn|social|cvv|secret|token|key|auth)/i;
+  
+  function redactRecursive(obj) {
+    if (typeof obj !== 'object' || obj === null) {
+      // Check if the value itself contains sensitive patterns
+      if (typeof obj === 'string') {
+        let redacted = obj;
+        for (const [type, pattern] of Object.entries(sensitivePatterns)) {
+          redacted = redacted.replace(pattern, '[REDACTED]');
+        }
+        return redacted;
+      }
+      return obj;
+    }
+    
+    const sanitized = Array.isArray(obj) ? [] : {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (sensitiveFieldPatterns.test(key)) {
+        sanitized[key] = '[REDACTED]';
+      } else {
+        sanitized[key] = redactRecursive(value);
+      }
+    }
+    return sanitized;
+  }
+  
+  return redactRecursive(data);
+}
