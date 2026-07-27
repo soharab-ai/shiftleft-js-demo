@@ -1,40 +1,45 @@
-// FIX: Implemented deep object sanitization with recursive traversal, circular reference detection,
-// and pattern matching to comprehensively redact sensitive data from logs at any nesting level
-sanitizeForLog(data, visited = new WeakSet()) {
-  // Define sensitive field patterns for flexible matching (case-insensitive)
-  // FIX: Added pattern-based matching to catch variations like "user_password", "api-key", "passwordConfirm"
-  const SENSITIVE_PATTERNS = [
-    /password/i, 
-    /token/i, 
-    /api[_-]?key/i, 
-    /secret/i, 
-    /auth/i, 
-    /credential/i, 
-encryptData(secretText) {
-    const crypto = require('crypto');
+// Configure logger with built-in sanitization and log forging prevention
+// Replaces manual sanitization to address sensitive-to-log vulnerability (Score: 8.0)
+// Implements CWE-532 and CWE-117 mitigations per OWASP/NIST standards
+configureLogger() {
+  const logger = winston.createLogger({
+    format: winston.format.combine(
+      winston.format.errors({ stack: true }),
+      winston.format.json({
+        replacer: (key, value) => {
+          // Comprehensive regex-based sensitive field detection to prevent data exposure
+          if (/password|token|secret|api[_-]?key|auth|credential|session|jwt|authorization/i.test(key)) {
+            return '[REDACTED]';
+          }
+          // Prevent log forging (CWE-117) by escaping control characters
+          if (typeof value === 'string') {
+            return value.replace(/[\n\r\t]/g, ' ');
+          }
+          return value;
+        }
+      })
+    ),
+    transports: [new winston.transports.Console()]
+  });
+  return logger;
+// Input validation schema to prevent NoSQL injection and ensure data type integrity
+// Addresses CWE-90 (NoSQL Injection) vulnerability
+validateLoginInput(requestBody) {
+  const loginSchema = Joi.object({
+    username: Joi.string().alphanum().min(3).max(30).required(),
+    password: Joi.string().min(8).max(128).required(),
+    keeponline: Joi.boolean().optional(),
+    encodedPath: Joi.string().optional()
+  });
+  
+  const { error, value } = loginSchema.validate(requestBody, {
+    stripUnknown: true,
+    abortEarly: false
+  });
+  
+  return { error, value };
+}
 
-    // FIXED: Replaced DES with AES-256-GCM (strong encryption standard)
-    // Using AES-256-GCM provides authenticated encryption with 256-bit key strength
-    const algorithm = 'aes-256-gcm';
-    
-    // FIXED: Removed insecure fallback to random key generation
-    // Validate that ENCRYPTION_KEY exists and has correct format
-    if (!process.env.ENCRYPTION_KEY) {
-        throw new Error('ENCRYPTION_KEY environment variable must be set and must be 32 bytes (64 hex characters)');
-async handleLogin(req, res, client, data) {
-    const { username, password, keeponline } = data;
-    try {
-      // DB Query
-      const db = client.db('tarpit', { returnNonCachedInstance: true });
-      if (!db) {
-        this.loginFailed(req, res, data);
-        return;
-      }
-      const result = await db.collection('users').findOne({
-        username,
-        password
-      });
-      if (result) {
         const user = {
           fname: result.fname,
           lname: result.lname,
@@ -65,59 +70,87 @@ async handleLogin(req, res, client, data) {
       } else {
         this.loginFailed(req, res, data);
   // FIX: Enhanced helper method with pattern-based detection and log forging prevention
-  sanitizeForLogging(data) {
-    if (typeof data !== 'object' || data === null) {
-      // FIX: Prevent log forging by removing newline characters from non-object data
-      return String(data).replace(/[\n\r]/g, '_');
+login(req, res) {
+    /*
+      This can be exploited (similar to SQL Injection) when the request body is
+      {
+        "password": {
+          "$gt": ""
+        },
+        "username": {
+          "$gt": ""
+        }
+      }
+      MITIGATION APPLIED: Input validation with Joi schema now prevents NoSQL injection
+    */
+    
+    // Initialize logger with sanitization capabilities
+    const logger = this.configureLogger();
+    
+    // FIX: Validate input to prevent NoSQL injection attacks (CWE-90)
+    const { error, value } = this.validateLoginInput(req.body);
+    
+    if (error) {
+      // Log validation failure without sensitive data, using library-level sanitization
+      logger.warn({ 
+        action: 'login_validation_failed', 
+        errors: error.details.map(d => d.message),
+        timestamp: new Date().toISOString()
+      });
+      return res.status(400).json({ error: 'Invalid input parameters' });
     }
     
-    const sanitized = { ...data };
-    // FIX: Pattern-based detection for sensitive field names to catch variations
-    const sensitivePatterns = /(password|passwd|pwd|secret|token|key|credit|card|passport|ssn|social|address|zip|phone|email)/i;
+    const { username, password, encodedPath, keeponline } = value;
     
-    Object.keys(sanitized).forEach(key => {
-      if (sensitivePatterns.test(key) || (typeof sanitized[key] === 'string' && sanitized[key].match(/^\d{13,19}$/))) {
-        // FIX: Redact sensitive fields based on pattern matching
-        sanitized[key] = '[REDACTED]';
-      } else if (typeof sanitized[key] === 'string') {
-        // FIX: Prevent log forging on all string values by removing newlines
-        sanitized[key] = sanitized[key].replace(/[\n\r]/g, '_');
-      }
-    });
+    // FIX: Separate authentication data from safe processing data to prevent downstream exposure
+    const authData = { username, password }; // Only for authentication - not logged
+    const safeData = { username, keeponline, encodedPath }; // For logging and processing - no password
     
-    return sanitized;
+    // FIX: Environment-aware logging to minimize attack surface in production
+    // Uses library-level sanitization with log forging prevention
+    if (process.env.NODE_ENV === 'production') {
+      logger.info({ 
+        action: 'login_attempt', 
+        timestamp: new Date().toISOString() 
+      });
+    } else {
+      logger.debug({ 
+        action: 'login_attempt',
+        username: username, 
+        keeponline: keeponline,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    try {
+      new MongoDBClient().connect((err, client) => {
+        if (client) {
+          // FIX: Pass authData for authentication and safeData for processing/logging
+          // Ensures handleLogin receives password only for DB query, not for logging
+          this.handleLogin(req, res, client, authData, safeData);
+        } else {
+          // FIX: Log error without exposing sensitive data, with log forging prevention
+          logger.error({ 
+            action: 'db_connection_failed', 
+            error: err ? err.message : 'Unknown error',
+            timestamp: new Date().toISOString()
+          });
+          // FIX: Pass only safeData to prevent password logging in loginFailed method
+          this.loginFailed(req, res, safeData);
+        }
+      });
+    } catch (ex) {
+      // FIX: Log exception without exposing sensitive data, using library sanitization
+      logger.error({ 
+        action: 'login_exception', 
+        error: ex.message,
+        timestamp: new Date().toISOString()
+      });
+      // FIX: Pass only safeData to prevent password exposure in error handling
+      this.loginFailed(req, res, safeData);
+    }
   }
 
-    // FIXED: Added corresponding decryption method for AES-256-GCM
-    // FIXED: Retrieve key based on version for key rotation support
-    const keyVersion = encryptedData.keyVersion || '1';
-    const keyEnvVar = keyVersion === '1' ? 'ENCRYPTION_KEY' : `ENCRYPTION_KEY_V${keyVersion}`;
-    if (!process.env[keyEnvVar]) {
-        throw new Error(`Encryption key for version ${keyVersion} not found in environment`);
-    }
-    const key = Buffer.from(process.env[keyEnvVar], 'hex');
-    
-    // FIXED: Validate key length for AES-256
-    if (key.length !== 32) {
-        throw new Error(`Encryption key for version ${keyVersion} must be exactly 32 bytes (64 hex characters) for AES-256`);
-    }
-    
-    // FIXED: Extract components from encrypted data object
-    const algorithm = encryptedData.algorithm || 'aes-256-gcm';
-    const iv = Buffer.from(encryptedData.iv, 'hex');
-    const authTag = Buffer.from(encryptedData.authTag, 'hex');
-    
-    // FIXED: Create decipher with secure algorithm
-    const decipher = crypto.createDecipheriv(algorithm, key, iv);
-    
-    // FIXED: Set authentication tag to verify data integrity before decryption
-    decipher.setAuthTag(authTag);
-    
-    // FIXED: Decrypt data with proper encoding
-    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    
-    return decrypted;
 }
 
           // FIX: Pass sanitized data to loginFailed to prevent password logging in error handlers
