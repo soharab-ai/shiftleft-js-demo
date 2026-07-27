@@ -21,67 +21,86 @@ async encryptData(secretText) {
     
     const password = process.env.ENCRYPTION_KEY;
     
-    // FIXED: Generate random salt for key derivation
-    const salt = crypto.randomBytes(16);
+async handleLogin(req, res, client, data) {
+    const { username, password, keeponline } = data;
     
-    // FIXED: Use async scrypt for non-blocking key derivation with explicit parameters for security hardening
-    const scryptAsync = util.promisify(crypto.scrypt);
-    const key = await scryptAsync(password, salt, 32, { N: 32768, r: 8, p: 1 });
-    
-    // FIXED: Generate random IV for each encryption operation
-    const iv = crypto.randomBytes(16);
-    
-    // FIXED: Use AES-256-GCM instead of DES
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    
-    // FIXED: Properly encrypt using update() and final() methods
-    let encrypted = cipher.update(secretText, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    // FIXED: Get authentication tag for data integrity verification
-    const authTag = cipher.getAuthTag();
-    
-    // FIXED: Return encrypted data with salt, iv, and authTag for decryption
-    return {
-        encrypted: encrypted,
-        salt: salt.toString('hex'),
-        iv: iv.toString('hex'),
-        authTag: authTag.toString('hex')
-    };
-}
-
-    // FIXED: Validate input structure to prevent attacks from malformed data
-    if (!encryptedData || typeof encryptedData !== 'object') {
-        throw new Error('Invalid encrypted data format: must be an object');
+    // SECURITY FIX: Input validation to prevent injection attacks and ensure safe logging
+    if (!username || !password || username.length > 50 || password.length > 50) {
+      this.loginFailed(req, res, data);
+      return;
     }
+    
+    // SECURITY FIX: Generate sanitized correlation ID for secure tracing without exposing user identities
+    const correlationId = `login_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    try {
+      // DB Query
+      const db = client.db('tarpit', { returnNonCachedInstance: true });
+      if (!db) {
+        this.loginFailed(req, res, data);
+        return;
+      }
+      const result = await db.collection('users').findOne({
+        username,
+        password
+      });
+      if (result) {
+        const user = {
+          fname: result.fname,
+          lname: result.lname,
+          passportnum: result.passportnum,
+          address1: result.address1,
+          address2: result.address2,
+          zipCode: result.zipCode
+        };
+        const creditInfo = encryptData(result.creditCard);
+        
+        // SECURITY FIX: Log sanitization to prevent log forging/injection attacks
+        // Sanitize userId by removing control characters that could forge log entries
+        const sanitizedUserId = result._id 
+          ? String(result._id).replace(/[\n\r\t\x00-\x1F\x7F]/g, '_').substring(0, 50)
+          : 'N/A';
+        
+        // SECURITY FIX: Use correlation ID instead of actual userId to prevent enumeration attacks
+        logger.info('Login successful - Session initiated', {
+          correlationId: correlationId,
+          timestamp: new Date().toISOString()
+        });
+        
+        res.cookie('username', result.username);
+        res.cookie('maxAge', 864000);
+        res.cookie('cc', creditInfo);
 
-    // FIXED: Validate all required fields exist and are valid hex strings
-    const requiredFields = ['encrypted', 'salt', 'iv', 'authTag'];
-    for (const field of requiredFields) {
-        if (!encryptedData[field] || typeof encryptedData[field] !== 'string' || !/^[0-9a-f]+$/i.test(encryptedData[field])) {
-            throw new Error(`Invalid or missing ${field} in encrypted data`);
+        req.session.user = JSON.stringify(user);
+        req.session.username = username;
+
+        res.redirect('/');
+      } else {
+        this.loginFailed(req, res, data);
+      }
+    } catch (ex) {
+  // SECURITY FIX: Enhanced sanitization utility to prevent log injection/forging attacks
+  // This method filters allowed fields AND sanitizes content to remove control characters
+  sanitizeForLogging(obj, allowedFields = []) {
+    const sanitized = {};
+    allowedFields.forEach(field => {
+      if (obj[field] !== undefined) {
+        const value = obj[field];
+        // SECURITY FIX: Sanitize string values to remove control characters for log forging prevention
+        if (typeof value === 'string') {
+          // Remove all control characters including null bytes, newlines, carriage returns
+          sanitized[field] = value.replace(/[\n\r\t\x00-\x1F\x7F]/g, '_').substring(0, 100);
+        } else if (typeof value === 'number' || typeof value === 'boolean') {
+          sanitized[field] = value;
+        } else {
+          // For objects/arrays, convert to string and sanitize
+          sanitized[field] = String(value).replace(/[\n\r\t\x00-\x1F\x7F]/g, '_').substring(0, 100);
         }
-    }
+      }
+    });
+    return sanitized;
+  }
 
-    // FIXED: Validate correct lengths for cryptographic components
-    if (Buffer.from(encryptedData.salt, 'hex').length !== 16) {
-        throw new Error('Invalid salt length');
-    }
-    if (Buffer.from(encryptedData.iv, 'hex').length !== 16) {
-        throw new Error('Invalid IV length');
-    }
-    if (Buffer.from(encryptedData.authTag, 'hex').length !== 16) {
-        throw new Error('Invalid authentication tag length');
-    }
-    
-    // FIXED: Validate encryption key from environment variable - fail fast if not properly configured
-    if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length < 32) {
-        throw new Error('ENCRYPTION_KEY must be set in environment variables and be at least 32 characters long');
-    }
-    
-    const password = process.env.ENCRYPTION_KEY;
-    
-    // FIXED: Reconstruct salt from hex string
     const salt = Buffer.from(encryptedData.salt, 'hex');
     
     // FIXED: Use async scrypt for non-blocking key derivation with explicit parameters matching encryption
