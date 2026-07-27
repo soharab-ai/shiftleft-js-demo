@@ -10,98 +10,102 @@ function hashForLogging(input) {
     res.redirect('/login');
   }
 
-  encryptData(secretText) {
+async encryptData(secretText) {
     const crypto = require('crypto');
+    const util = require('util');
 
-    // Weak encryption
-    const desCipher = crypto.createCipheriv(
-      'des',
-      "This is a simple password, don't guess it"
-    );
-    return desCipher.write(secretText, 'utf8', 'hex'); // BAD: weak encryption
-  }
-
-async handleLogin(req, res, client, data) {
-    const { username, password, keeponline } = data;
-    try {
-      // DB Query
-      const db = client.db('tarpit', { returnNonCachedInstance: true });
-      if (!db) {
-        this.loginFailed(req, res, data);
-        return;
-      }
-      const result = await db.collection('users').findOne({
-        username,
-        password
-      });
-      if (result) {
-        // SECURITY FIX: Removed sensitive PII fields from being stored in variables that could be logged
-        // Only extract necessary identifiers
-        
-        // SECURITY FIX: Use structured logging with hashed username instead of plaintext
-        logger.info({
-          event: 'login_success',
-          user_id: hashForLogging(username),
-          timestamp: new Date().toISOString()
-        });
-        
-        // SECURITY FIX: Store only user ID reference instead of full user object and credit card data
-        res.cookie('user_id', result._id, { httpOnly: true, secure: true });
-        res.cookie('maxAge', 864000);
-        // Removed credit card cookie to prevent sensitive data exposure
-
-        // SECURITY FIX: Store only user ID in session instead of full PII
-        req.session.user_id = result._id;
-        req.session.username = username;
-
-        res.redirect('/');
-      } else {
-        this.loginFailed(req, res, data);
-      }
-    } catch (ex) {
-      // SECURITY FIX: Log structured exception metadata without sensitive details
-      logger.error({
-        event: 'login_error',
-        error_type: ex.name,
-        error_code: ex.code,
-        timestamp: new Date().toISOString()
-        // Explicitly exclude ex.message and ex.stack which may contain sensitive data
-      });
-      this.loginFailed(req, res, data);
+    // FIXED: Validate encryption key from environment variable - fail fast if not properly configured
+    if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length < 32) {
+        throw new Error('ENCRYPTION_KEY must be set in environment variables and be at least 32 characters long');
     }
-  }
-
-  }
-
-  login(req, res) {
-    /*
-      This can be exploited (similar to SQL Injection) when the request body is
-      {
-        "password": {
-          "$gt": ""
-        },
-        "username": {
-          "$gt": ""
-        }
-      }
-    */
-    const { username, password, encodedPath, keeponline } = req.body;
-    const data = { username, password, keeponline };
-    logger.debug(data);
-    try {
-      new MongoDBClient().connect((err, client) => {
-        if (client) {
-          this.handleLogin(req, res, client, data);
-        } else {
-          console.error(err);
-          this.loginFailed(req, res, data);
-        }
-      });
-    } catch (ex) {
-      logger.error(ex);
-      this.loginFailed(req, res, data);
-    }
-  }
+    
+    const password = process.env.ENCRYPTION_KEY;
+    
+    // FIXED: Generate random salt for key derivation
+    const salt = crypto.randomBytes(16);
+    
+    // FIXED: Use async scrypt for non-blocking key derivation with explicit parameters for security hardening
+    const scryptAsync = util.promisify(crypto.scrypt);
+    const key = await scryptAsync(password, salt, 32, { N: 32768, r: 8, p: 1 });
+    
+    // FIXED: Generate random IV for each encryption operation
+    const iv = crypto.randomBytes(16);
+    
+    // FIXED: Use AES-256-GCM instead of DES
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    
+    // FIXED: Properly encrypt using update() and final() methods
+    let encrypted = cipher.update(secretText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // FIXED: Get authentication tag for data integrity verification
+    const authTag = cipher.getAuthTag();
+    
+    // FIXED: Return encrypted data with salt, iv, and authTag for decryption
+    return {
+        encrypted: encrypted,
+        salt: salt.toString('hex'),
+        iv: iv.toString('hex'),
+        authTag: authTag.toString('hex')
+    };
 }
 
-module.exports = Login;
+    // FIXED: Validate input structure to prevent attacks from malformed data
+    if (!encryptedData || typeof encryptedData !== 'object') {
+        throw new Error('Invalid encrypted data format: must be an object');
+    }
+
+    // FIXED: Validate all required fields exist and are valid hex strings
+    const requiredFields = ['encrypted', 'salt', 'iv', 'authTag'];
+    for (const field of requiredFields) {
+        if (!encryptedData[field] || typeof encryptedData[field] !== 'string' || !/^[0-9a-f]+$/i.test(encryptedData[field])) {
+            throw new Error(`Invalid or missing ${field} in encrypted data`);
+        }
+    }
+
+    // FIXED: Validate correct lengths for cryptographic components
+    if (Buffer.from(encryptedData.salt, 'hex').length !== 16) {
+        throw new Error('Invalid salt length');
+    }
+    if (Buffer.from(encryptedData.iv, 'hex').length !== 16) {
+        throw new Error('Invalid IV length');
+    }
+    if (Buffer.from(encryptedData.authTag, 'hex').length !== 16) {
+        throw new Error('Invalid authentication tag length');
+    }
+    
+    // FIXED: Validate encryption key from environment variable - fail fast if not properly configured
+    if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length < 32) {
+        throw new Error('ENCRYPTION_KEY must be set in environment variables and be at least 32 characters long');
+    }
+    
+    const password = process.env.ENCRYPTION_KEY;
+    
+    // FIXED: Reconstruct salt from hex string
+    const salt = Buffer.from(encryptedData.salt, 'hex');
+    
+    // FIXED: Use async scrypt for non-blocking key derivation with explicit parameters matching encryption
+    const scryptAsync = util.promisify(crypto.scrypt);
+    const key = await scryptAsync(password, salt, 32, { N: 32768, r: 8, p: 1 });
+    
+    // FIXED: Reconstruct IV from hex string
+    const iv = Buffer.from(encryptedData.iv, 'hex');
+    
+    // FIXED: Create decipher with AES-256-GCM
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    
+    // FIXED: Set authentication tag for integrity verification
+    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
+    
+    // FIXED: Wrap decryption in try-catch to prevent information disclosure through error messages
+    try {
+        let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (error) {
+        // Log the actual error securely (server-side only)
+        console.error('Decryption failed:', error.message);
+        // Throw a generic error to prevent information leakage
+        throw new Error('Decryption failed: invalid data or authentication tag');
+    }
+}
