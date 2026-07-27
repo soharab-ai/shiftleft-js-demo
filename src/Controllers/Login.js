@@ -1,50 +1,61 @@
-// SECURITY FIX: Configure structured logging with winston to prevent log forging
-const logger = winston.createLogger({
-  level: 'debug',
-  format: winston.format.combine(
-    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    winston.format.errors({ stack: true }),
-    winston.format.json()
-  ),
-  transports: [
-    new winston.transports.Console(),
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' })
-  ]
-});
+// FIX: Added centralized secure logging wrapper to prevent sensitive data exposure and log forging attacks
+// This class automatically sanitizes sensitive fields and escapes control characters
+const validator = require('validator');
 
-// SECURITY FIX: Configure deep object redaction using fast-redact library
-const redact = fastRedact({
-  paths: [
-    'password',
-    '*.password',
-    'token',
-    '*.token',
-    'apiKey',
-    '*.apiKey',
-    'secret',
-// SECURITY FIX: Use fast-redact library for deep object sanitization instead of manual string replacement
-sanitizeForLogging(data) {
-  return redact(data);
+class SecureLogger {
+  constructor(baseLogger) {
+    this.logger = baseLogger;
+    // FIX: Comprehensive list of sensitive fields to redact from logs
+    this.sensitiveFields = ['password', 'token', 'apiKey', 'secret', 'creditCard', 'ssn', 'authToken'];
+  }
+  
+  // FIX: Prevents log forging by escaping special characters and removing newlines/carriage returns
+  sanitizeValue(value) {
+    if (typeof value === 'string') {
+      // Escape HTML/special characters and remove newline characters to prevent log injection
+      return validator.escape(value).replace(/[\n\r]/g, '');
+    }
+    return value;
+  }
+  
+  // FIX: Recursively sanitizes objects to redact sensitive fields and prevent log forging
+  sanitizeObject(obj) {
+    if (!obj || typeof obj !== 'object') return this.sanitizeValue(obj);
+    
+    const result = Array.isArray(obj) ? [] : {};
+    for (const key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        if (this.sensitiveFields.includes(key)) {
+          // Redact sensitive fields completely
+          result[key] = '[REDACTED]';
+        } else if (typeof obj[key] === 'object') {
+          // Recursively sanitize nested objects
+          result[key] = this.sanitizeObject(obj[key]);
+        } else {
+          // Sanitize primitive values to prevent log forging
+          result[key] = this.sanitizeValue(obj[key]);
+        }
+      }
+    }
+    return result;
+  }
+  
+  debug(message, data) {
+    this.logger.debug(this.sanitizeValue(message), this.sanitizeObject(data));
+  }
+  
+  warn(message, data) {
+    this.logger.warn(this.sanitizeValue(message), this.sanitizeObject(data));
+  }
+  
+  error(message, data) {
+    this.logger.error(this.sanitizeValue(message), this.sanitizeObject(data));
+  }
 }
 
-  censor: '[REDACTED]',
-  serialize: false
-});
+// FIX: Initialize secure logger wrapper to enforce safe logging throughout the application
+const secureLogger = new SecureLogger(logger);
 
-    try {
-      // DB Query
-      const db = client.db('tarpit', { returnNonCachedInstance: true });
-      if (!db) {
-        this.loginFailed(req, res, data);
-        return;
-      }
-      const result = await db.collection('users').findOne({
-        username,
-        password
-      });
-      if (result) {
-        const user = {
           fname: result.fname,
           lname: result.lname,
           passportnum: result.passportnum,
@@ -53,13 +64,15 @@ sanitizeForLogging(data) {
           zipCode: result.zipCode
         };
         const creditInfo = encryptData(result.creditCard);
-        logger.info(`user: ${JSON.stringify(user)} successfully logged in`);
-        logger.info(
-          `user ${user.fname} credit info: ${JSON.stringify(creditInfo)}`
-        );
-        res.cookie('username', result.username);
-        res.cookie('maxAge', 864000);
-        res.cookie('cc', creditInfo);
+  // FIX: Added input validation to prevent NoSQL injection attacks
+  // Ensures username and password are strings, not objects containing MongoDB operators
+  validateLoginInput(username, password) {
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      throw new Error('Invalid input: username and password must be strings');
+    }
+    return true;
+  }
+
 
         req.session.user = JSON.stringify(user);
         req.session.username = username;
@@ -74,8 +87,59 @@ sanitizeForLogging(data) {
     }
   }
 
-login(req, res) {
-  /*
+  login(req, res) {
+    /*
+      This can be exploited (similar to SQL Injection) when the request body is
+      {
+        "password": {
+          "$gt": ""
+        },
+        "username": {
+          "$gt": ""
+        }
+      }
+    */
+    const { username, password, encodedPath, keeponline } = req.body;
+    
+    // FIX: Validate input types to prevent NoSQL injection attacks
+    // Reject requests where username or password are not strings
+    try {
+      this.validateLoginInput(username, password);
+    } catch (validationError) {
+      // FIX: Use secureLogger to automatically sanitize log output and prevent log forging
+      secureLogger.warn('Login validation failed - invalid input type', { 
+        usernameType: typeof username,
+        passwordType: typeof password 
+      });
+      return res.status(400).json({ error: 'Invalid input format' });
+    }
+    
+    const data = { username, password, keeponline };
+    
+    // FIX: Use secureLogger for automatic sanitization - password will be redacted, log forging prevented
+    secureLogger.debug('Login attempt', { 
+      username, 
+      password,  // Automatically redacted by SecureLogger
+      keeponline 
+    });
+    
+    try {
+      new MongoDBClient().connect((err, client) => {
+        if (client) {
+          this.handleLogin(req, res, client, data);
+        } else {
+          // FIX: Secure logging of database connection errors - automatic sanitization applied
+          secureLogger.error('Database connection failed', { error: err });
+          this.loginFailed(req, res, data);
+        }
+      });
+    } catch (ex) {
+      // FIX: Secure exception logging - message and stack trace sanitized, no sensitive data exposed
+      secureLogger.error('Login exception', { message: ex.message, stack: ex.stack });
+      this.loginFailed(req, res, data);
+    }
+  }
+
     This can be exploited (similar to SQL Injection) when the request body is
     {
       "password": {
