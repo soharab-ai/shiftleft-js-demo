@@ -5,16 +5,15 @@ sanitizeForLogging(obj, depth = 0) {
   // SECURITY FIX: Pattern-based matching for better maintainability and coverage
   const SENSITIVE_PATTERNS = /password|credit|passport|ssn|address|zip|token|secret|key/i;
   
-  if (depth > MAX_DEPTH || typeof obj !== 'object' || obj === null) {
-    return obj;
+  // FIX: Enhanced sanitization using validator library to prevent log injection attacks
+  sanitizeLogInput(input) {
+    if (typeof input !== 'string') {
+      return validator.escape(String(input));
+    }
+    // Use validator.escape to handle HTML entities and remove control chars including Unicode control characters
+    return validator.escape(input).replace(/[\x00-\x1F\x7F-\x9F]/g, '');
   }
-  
-  // SECURITY FIX: Handle both arrays and objects for comprehensive sanitization
-  const sanitized = Array.isArray(obj) ? [] : {};
-  for (const [key, value] of Object.entries(obj)) {
-    // SECURITY FIX: Use regex pattern matching to catch variations of sensitive field names
-    if (SENSITIVE_PATTERNS.test(key)) {
-      sanitized[key] = '[REDACTED]';
+
     } else if (typeof value === 'object' && value !== null) {
       // SECURITY FIX: Deep traversal to sanitize nested sensitive data
       sanitized[key] = this.sanitizeForLogging(value, depth + 1);
@@ -30,7 +29,7 @@ sanitizeLogInput(input) {
 }
 
     
-async handleLogin(req, res, client, data) {
+  async handleLogin(req, res, client, data) {
     const { username, password, keeponline } = data;
     try {
       // DB Query
@@ -39,35 +38,57 @@ async handleLogin(req, res, client, data) {
         this.loginFailed(req, res, data);
         return;
       }
+      // FIX: Query by username only, password comparison should be done with bcrypt
       const result = await db.collection('users').findOne({
-        username,
-        password
+        username
       });
-      if (result) {
-        const user = {
-          fname: result.fname,
-          lname: result.lname,
-          passportnum: result.passportnum,
-          address1: result.address1,
-          address2: result.address2,
-          zipCode: result.zipCode
-        };
+      
+      // FIX: Verify password using bcrypt instead of plaintext comparison
+      if (result && await bcrypt.compare(password, result.password)) {
         const creditInfo = encryptData(result.creditCard);
         
-        // SECURITY FIX: Sanitize username to prevent log forging attacks (newline injection)
-        logger.info(this.sanitizeLogInput(`Login successful for user: ${username}`));
-        // SECURITY FIX: Do NOT log credit card information (even encrypted) or any PII data
+        // FIX: Removed sensitive data from logs - only log non-sensitive identifiers
+        logger.info('User login successful', {
+          userId: result._id,
+          timestamp: new Date().toISOString(),
+          action: 'login'
+        });
         
-        // SECURITY FIX: Add secure cookie flags to prevent XSS and MITM attacks
-        res.cookie('username', result.username, { httpOnly: true, secure: true, sameSite: 'strict' });
-        res.cookie('maxAge', 864000);
-        res.cookie('cc', creditInfo, { httpOnly: true, secure: true, sameSite: 'strict' });
+        // FIX: Added secure cookie flags for security
+        res.cookie('username', result.username, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'strict',
+          maxAge: 864000
+        });
+        
+        // FIX: Removed credit card info from cookies - never store sensitive data in cookies
+        res.cookie('maxAge', 864000, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'strict'
+        });
 
-        req.session.user = JSON.stringify(user);
+        // FIX: Store only non-sensitive identifier in session to prevent sensitive data exposure
+        req.session.userId = result._id.toString();
         req.session.username = username;
 
         res.redirect('/');
       } else {
+        // FIX: Sanitize username before logging to prevent log injection
+        logger.info(`Failed login attempt for user: ${this.sanitizeLogInput(username)}`);
+        this.loginFailed(req, res, data);
+      }
+    } catch (ex) {
+      // FIX: Log only error message without exposing sensitive contextual data from stack traces
+      logger.error('Login error occurred', { 
+        error: ex.message, 
+        timestamp: new Date().toISOString() 
+      });
+      this.loginFailed(req, res, data);
+    }
+  }
+
         this.loginFailed(req, res, data);
       }
     } catch (ex) {
