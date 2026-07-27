@@ -8,16 +8,63 @@ class Order {
     // Hash Key
     return key;
   }
-  encryptData(secretText) {
-    // Weak encryption
-    const desCipher = crypto.createCipheriv('des', encryptionKey);
-    return desCipher.update(secretText, 'utf8', 'hex');
+encryptData(secretText) {
+    // Fixed: Validate ENCRYPTION_SECRET environment variable exists
+    if (!process.env.ENCRYPTION_SECRET) {
+      throw new Error('ENCRYPTION_SECRET environment variable must be configured');
+    }
+    
+    // Fixed: Validate ENCRYPTION_SALT environment variable exists and has minimum length
+    if (!process.env.ENCRYPTION_SALT || Buffer.from(process.env.ENCRYPTION_SALT, 'hex').length < 16) {
+      throw new Error('ENCRYPTION_SALT environment variable must be configured with minimum 16 bytes');
+    }
+    
+    // Fixed: Replaced weak DES encryption with strong AES-256-GCM encryption
+    const algorithm = 'aes-256-gcm';
+    
+    // Fixed: Generate cryptographically secure random IV (12 bytes for GCM mode)
+    const iv = crypto.randomBytes(12);
+    
+    // Fixed: Use proper key derivation with scrypt and secure salt from environment variable
+    // Fixed: Added explicit scrypt parameters for OWASP-recommended security levels
+    const key = crypto.scryptSync(
+      process.env.ENCRYPTION_SECRET, 
+      process.env.ENCRYPTION_SALT, 
+      32,
+      { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }
+    );
+    
+    // Fixed: Create cipher with AES-256-GCM algorithm for authenticated encryption
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    
+    // Fixed: Encrypt the data with proper encoding
+    let encrypted = cipher.update(secretText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // Fixed: Get authentication tag for data integrity verification
+    const authTag = cipher.getAuthTag();
+    
+    // Fixed: Return version identifier for key rotation mechanism, IV, encrypted data, and auth tag
+    return {
+      version: process.env.ENCRYPTION_KEY_VERSION || '1',
+      iv: iv.toString('hex'),
+      encryptedData: encrypted,
+      authTag: authTag.toString('hex')
+    };
   }
 
-  decryptData(encryptedText) {
-    const desCipher = crypto.createDecipheriv('des', encryptionKey);
-    return desCipher.update(encryptedText);
+    // Fixed: Added try-catch block to handle decryption failures and prevent information leakage
+    try {
+      // Fixed: Decrypt the data with proper encoding
+      let decrypted = decipher.update(encryptedObject.encryptedData, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } catch (error) {
+      // Fixed: Generic error message to prevent information disclosure while indicating decryption failure
+      throw new Error('Decryption failed: data may be corrupted or tampered');
+    }
   }
+
   addToOrder(req, res) {
     const order = req.body;
     console.log(req.body);
