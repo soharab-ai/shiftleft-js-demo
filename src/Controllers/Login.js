@@ -10,127 +10,127 @@ sanitizeForLog(data, visited = new WeakSet()) {
     /secret/i, 
     /auth/i, 
     /credential/i, 
-    /bearer/i,
-    /access[_-]?token/i,
-    /refresh[_-]?token/i,
-    /private[_-]?key/i
-  ];
-  
-  // Handle null, undefined, or primitive types
-  if (data === null || data === undefined) {
-    return data;
-  }
-  
-  if (typeof data !== 'object') {
-    return data;
-  }
-  
-  // FIX: Circular reference detection to prevent infinite loops in recursive sanitization
-  if (visited.has(data)) {
-    return '[Circular Reference]';
-  }
-  
-  visited.add(data);
-  
-  // FIX: Handle arrays by recursively sanitizing each element
-  if (Array.isArray(data)) {
-    return data.map(item => this.sanitizeForLog(item, visited));
-  }
-  
-  // FIX: Deep clone for nested object sanitization instead of shallow copy
-  const sanitized = {};
-  
-  for (const key in data) {
-    if (data.hasOwnProperty(key)) {
-      // FIX: Pattern matching against sensitive field names (case-insensitive)
-      const isSensitive = SENSITIVE_PATTERNS.some(pattern => pattern.test(key));
-      
-      if (isSensitive) {
-        sanitized[key] = '[REDACTED]';
-      } else if (typeof data[key] === 'object' && data[key] !== null) {
-        // FIX: Recursively sanitize nested objects and arrays
-        sanitized[key] = this.sanitizeForLog(data[key], visited);
-      } else {
-        sanitized[key] = data[key];
-      }
+encryptData(secretText) {
+    const crypto = require('crypto');
+
+    // FIXED: Replaced DES with AES-256-GCM (strong encryption standard)
+    // Using AES-256-GCM provides authenticated encryption with 256-bit key strength
+    const algorithm = 'aes-256-gcm';
+    
+    // FIXED: Removed insecure fallback to random key generation
+    // Validate that ENCRYPTION_KEY exists and has correct format
+    if (!process.env.ENCRYPTION_KEY) {
+        throw new Error('ENCRYPTION_KEY environment variable must be set and must be 32 bytes (64 hex characters)');
     }
-  }
-  
-  return sanitized;
+    const key = Buffer.from(process.env.ENCRYPTION_KEY, 'hex');
+    if (key.length !== 32) {
+        throw new Error('ENCRYPTION_KEY must be exactly 32 bytes (64 hex characters) for AES-256');
+    }
+    
+    // FIXED: Generate random initialization vector for each encryption operation
+    // IV ensures same plaintext produces different ciphertext each time
+    const iv = crypto.randomBytes(16); // 128 bits IV for GCM mode
+    
+    // FIXED: Create cipher with secure algorithm (AES-256-GCM)
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    
+    // FIXED: Properly encrypt data using update and final methods
+    let encrypted = cipher.update(secretText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // FIXED: Get authentication tag for GCM mode to ensure data integrity
+    // This prevents tampering with encrypted data
+    const authTag = cipher.getAuthTag();
+    
+    // FIXED: Return all necessary components for secure decryption
+    // IV and authTag are not secret but required for decryption
+    // FIXED: Added key version identifier for key rotation support
+    return {
+        encrypted: encrypted,
+        iv: iv.toString('hex'),
+        authTag: authTag.toString('hex'),
+        algorithm: algorithm,
+        keyVersion: process.env.ENCRYPTION_KEY_VERSION || '1'
+    };
 }
 
-          timestamp: new Date().toISOString(),
-          action: 'login'
-        });
-        
-        // FIX: Added secure cookie flags for security
-        res.cookie('username', result.username, {
-login(req, res) {
-    /*
-      This can be exploited (similar to SQL Injection) when the request body is
-      {
-        "password": {
-          "$gt": ""
-        },
-        "username": {
-          "$gt": ""
-        }
-      }
-    */
-    const { username, password, encodedPath, keeponline } = req.body;
+decryptData(encryptedData) {
+    const crypto = require('crypto');
     
-    // FIX: Input validation to prevent NoSQL injection attacks
-    // Ensure username and password are strings, not objects with operators
-    if (typeof username !== 'string' || typeof password !== 'string') {
-      logger.warn('Invalid login attempt with non-string credentials');
-      return res.status(400).json({ error: 'Invalid input format' });
+    // FIXED: Added input validation for decryption parameters
+    if (!encryptedData || typeof encryptedData !== 'object') {
+        throw new Error('Invalid encrypted data: must be an object');
+    }
+    if (!encryptedData.encrypted || typeof encryptedData.encrypted !== 'string') {
+        throw new Error('Invalid encrypted data: missing or invalid encrypted field');
+    }
+    if (!encryptedData.iv || typeof encryptedData.iv !== 'string' || encryptedData.iv.length !== 32) {
+        throw new Error('Invalid encrypted data: IV must be 32 hex characters (16 bytes)');
+    }
+    if (!encryptedData.authTag || typeof encryptedData.authTag !== 'string' || encryptedData.authTag.length !== 32) {
+        throw new Error('Invalid encrypted data: authTag must be 32 hex characters (16 bytes)');
     }
     
-    // FIX: Separate operational data from loggable data to prevent accidental logging of sensitive info
-    const data = { username, password, keeponline };
-    const sanitizedData = this.sanitizeForLog(data);
+    // FIXED: Added corresponding decryption method for AES-256-GCM
+    // FIXED: Retrieve key based on version for key rotation support
+    const keyVersion = encryptedData.keyVersion || '1';
+    const keyEnvVar = keyVersion === '1' ? 'ENCRYPTION_KEY' : `ENCRYPTION_KEY_V${keyVersion}`;
+    if (!process.env[keyEnvVar]) {
+        throw new Error(`Encryption key for version ${keyVersion} not found in environment`);
+    }
+    const key = Buffer.from(process.env[keyEnvVar], 'hex');
     
-    // FIX: Log only sanitized data without sensitive information (password redacted)
-    // Using deep sanitization to redact password field and nested sensitive data before logging
-    logger.debug(sanitizedData);
+    // FIXED: Validate key length for AES-256
+    if (key.length !== 32) {
+        throw new Error(`Encryption key for version ${keyVersion} must be exactly 32 bytes (64 hex characters) for AES-256`);
+    }
     
-    try {
-      new MongoDBClient().connect((err, client) => {
-        if (client) {
-          // Pass operational data to handleLogin for authentication (never log this directly)
-          this.handleLogin(req, res, client, data);
-        } else {
-          // FIX: Sanitize error logging to prevent sensitive data exposure in error messages
-          logger.error(this.sanitizeForLog({ 
-            error: err?.message || 'Database connection failed', 
-            stack: err?.stack?.split('\n')[0] 
-          }));
+    // FIXED: Extract components from encrypted data object
+    const algorithm = encryptedData.algorithm || 'aes-256-gcm';
+    const iv = Buffer.from(encryptedData.iv, 'hex');
+    const authTag = Buffer.from(encryptedData.authTag, 'hex');
+    
+    // FIXED: Create decipher with secure algorithm
+    const decipher = crypto.createDecipheriv(algorithm, key, iv);
+    
+    // FIXED: Set authentication tag to verify data integrity before decryption
+    decipher.setAuthTag(authTag);
+    
+    // FIXED: Decrypt data with proper encoding
+    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+}
+
           // FIX: Pass sanitized data to loginFailed to prevent password logging in error handlers
           this.loginFailed(req, res, sanitizedData);
-        }
-      });
-    } catch (ex) {
-      // FIX: Sanitize exception logging to prevent sensitive data exposure
-      logger.error(this.sanitizeForLog({ 
-        error: ex?.message || 'Unknown error', 
-        type: ex?.constructor?.name || 'Error',
-        stack: ex?.stack?.split('\n')[0]
-      }));
-      // FIX: Pass sanitized data to loginFailed to prevent password logging in exception handlers
-      this.loginFailed(req, res, sanitizedData);
-    }
-  }
-
-  }
-
+deriveKeyFromPassword(password, salt = null) {
+    const crypto = require('crypto');
     
-    // FIX: Hex format validation using regex
-    const hexRegex = /^[0-9a-f]+$/i;
-    if (!hexRegex.test(encryptedData.salt) || !hexRegex.test(encryptedData.iv) || 
-        !hexRegex.test(encryptedData.authTag) || !hexRegex.test(encryptedData.encrypted)) {
-        throw new Error('Malformed encrypted data: invalid hex format');
+    // FIXED: Added secure key derivation function for password-based encryption
+    // Use PBKDF2 to derive a strong key from a password
+    
+    // Generate or use provided salt
+    const keySalt = salt ? Buffer.from(salt, 'hex') : crypto.randomBytes(32);
+    
+    // FIXED: Increased iteration count to meet current OWASP recommendations
+    // Made iteration count configurable with secure minimum threshold
+    const iterations = parseInt(process.env.PBKDF2_ITERATIONS || '600000', 10);
+    if (iterations < 310000) {
+        throw new Error('PBKDF2 iterations must be at least 310,000 for adequate security');
     }
     
+    // FIXED: Use PBKDF2 with enhanced iteration count and SHA-256
+    // High iteration count protects against brute-force attacks
+    const derivedKey = crypto.pbkdf2Sync(password, keySalt, iterations, 32, 'sha256');
+    
+    return {
+        key: derivedKey.toString('hex'),
+        salt: keySalt.toString('hex')
+    };
+}
+
     // FIX: Algorithm agility through configuration with allowlist validation
     const ALLOWED_ALGORITHMS = ['aes-256-gcm', 'aes-256-ccm'];
     const CRYPTO_ALGORITHM = process.env.CRYPTO_ALGORITHM || 'aes-256-gcm';
