@@ -21,56 +21,73 @@ encryptData(secretText) {
     // Validate that ENCRYPTION_KEY exists and has correct format
     if (!process.env.ENCRYPTION_KEY) {
         throw new Error('ENCRYPTION_KEY environment variable must be set and must be 32 bytes (64 hex characters)');
-    }
-    const key = Buffer.from(process.env.ENCRYPTION_KEY, 'hex');
-    if (key.length !== 32) {
-        throw new Error('ENCRYPTION_KEY must be exactly 32 bytes (64 hex characters) for AES-256');
-    }
-    
-    // FIXED: Generate random initialization vector for each encryption operation
-    // IV ensures same plaintext produces different ciphertext each time
-    const iv = crypto.randomBytes(16); // 128 bits IV for GCM mode
-    
-    // FIXED: Create cipher with secure algorithm (AES-256-GCM)
-    const cipher = crypto.createCipheriv(algorithm, key, iv);
-    
-    // FIXED: Properly encrypt data using update and final methods
-    let encrypted = cipher.update(secretText, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    // FIXED: Get authentication tag for GCM mode to ensure data integrity
-    // This prevents tampering with encrypted data
-    const authTag = cipher.getAuthTag();
-    
-    // FIXED: Return all necessary components for secure decryption
-    // IV and authTag are not secret but required for decryption
-    // FIXED: Added key version identifier for key rotation support
-    return {
-        encrypted: encrypted,
-        iv: iv.toString('hex'),
-        authTag: authTag.toString('hex'),
-        algorithm: algorithm,
-        keyVersion: process.env.ENCRYPTION_KEY_VERSION || '1'
-    };
-}
+async handleLogin(req, res, client, data) {
+    const { username, password, keeponline } = data;
+    try {
+      // DB Query
+      const db = client.db('tarpit', { returnNonCachedInstance: true });
+      if (!db) {
+        this.loginFailed(req, res, data);
+        return;
+      }
+      const result = await db.collection('users').findOne({
+        username,
+        password
+      });
+      if (result) {
+        const user = {
+          fname: result.fname,
+          lname: result.lname,
+          passportnum: result.passportnum,
+          address1: result.address1,
+          address2: result.address2,
+          zipCode: result.zipCode
+        };
+        const creditInfo = encryptData(result.creditCard);
+        
+        // FIX: Log forging prevention by sanitizing username before logging
+        const sanitizedUsername = username.replace(/[\n\r]/g, '_');
+        // FIX: Structured logging with minimal non-sensitive information for audit trail
+        logger.info('Login successful', {
+          username: sanitizedUsername,
+          timestamp: new Date().toISOString(),
+          sessionId: req.session.id
+        });
+        
+        res.cookie('username', result.username);
+        res.cookie('maxAge', 864000);
+        res.cookie('cc', creditInfo);
 
-decryptData(encryptedData) {
-    const crypto = require('crypto');
-    
-    // FIXED: Added input validation for decryption parameters
-    if (!encryptedData || typeof encryptedData !== 'object') {
-        throw new Error('Invalid encrypted data: must be an object');
-    }
-    if (!encryptedData.encrypted || typeof encryptedData.encrypted !== 'string') {
-        throw new Error('Invalid encrypted data: missing or invalid encrypted field');
-    }
-    if (!encryptedData.iv || typeof encryptedData.iv !== 'string' || encryptedData.iv.length !== 32) {
-        throw new Error('Invalid encrypted data: IV must be 32 hex characters (16 bytes)');
-    }
-    if (!encryptedData.authTag || typeof encryptedData.authTag !== 'string' || encryptedData.authTag.length !== 32) {
-        throw new Error('Invalid encrypted data: authTag must be 32 hex characters (16 bytes)');
+        req.session.user = JSON.stringify(user);
+        req.session.username = username;
+
+        res.redirect('/');
+      } else {
+        this.loginFailed(req, res, data);
+  // FIX: Enhanced helper method with pattern-based detection and log forging prevention
+  sanitizeForLogging(data) {
+    if (typeof data !== 'object' || data === null) {
+      // FIX: Prevent log forging by removing newline characters from non-object data
+      return String(data).replace(/[\n\r]/g, '_');
     }
     
+    const sanitized = { ...data };
+    // FIX: Pattern-based detection for sensitive field names to catch variations
+    const sensitivePatterns = /(password|passwd|pwd|secret|token|key|credit|card|passport|ssn|social|address|zip|phone|email)/i;
+    
+    Object.keys(sanitized).forEach(key => {
+      if (sensitivePatterns.test(key) || (typeof sanitized[key] === 'string' && sanitized[key].match(/^\d{13,19}$/))) {
+        // FIX: Redact sensitive fields based on pattern matching
+        sanitized[key] = '[REDACTED]';
+      } else if (typeof sanitized[key] === 'string') {
+        // FIX: Prevent log forging on all string values by removing newlines
+        sanitized[key] = sanitized[key].replace(/[\n\r]/g, '_');
+      }
+    });
+    
+    return sanitized;
+  }
+
     // FIXED: Added corresponding decryption method for AES-256-GCM
     // FIXED: Retrieve key based on version for key rotation support
     const keyVersion = encryptedData.keyVersion || '1';
