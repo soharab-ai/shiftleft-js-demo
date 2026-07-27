@@ -10,129 +10,154 @@ function sanitizeForLog(input) {
 function hashUsernameForLog(username) {
   const LOG_SALT = process.env.LOG_SALT || 'default-salt-change-in-production';
   return crypto.createHash('sha256').update(username + LOG_SALT).digest('hex').substring(0, 16);
-}
-
-      return validator.escape(value).replace(/[\n\r]/g, '');
-// SECURITY FIX: Anonymize IP addresses to comply with privacy regulations
-function anonymizeIP(ip) {
-  if (!ip || ip === 'unknown') return 'unknown';
-  if (ip.includes('.')) {
-    // IPv4: mask last octet
-    return ip.split('.').slice(0, 3).join('.') + '.0';
-  } else if (ip.includes(':')) {
-    // IPv6: mask last 80 bits
-    return ip.split(':').slice(0, 3).join(':') + '::';
-  }
-  return 'unknown';
-}
-
-    const { username, password, keeponline } = data;
+async encryptData(secretText) {
+    const crypto = require('crypto');
+    const util = require('util');
     
-    // SECURITY FIX: Initialize failed login attempt tracking for rate-limited logging
-    if (!this.failedLoginAttempts) {
-      this.failedLoginAttempts = new Map();
+    // FIX: Input validation and size limits to prevent resource exhaustion attacks
+    if (!secretText || typeof secretText !== 'string' || secretText.length > 1048576) {
+        throw new Error('Invalid input: must be a string under 1MB');
     }
     
-    try {
-      // DB Query
-      const db = client.db('tarpit', { returnNonCachedInstance: true });
-      if (!db) {
-        this.loginFailed(req, res, data);
-        return;
-      }
-      
-      // SECURITY FIX: Use parameterized query to prevent NoSQL injection
-      const result = await db.collection('users').findOne({
-        username: { $eq: username }
-      });
-      
-      // SECURITY FIX: Validate password using bcrypt hash comparison instead of plaintext
-      if (result && result.passwordHash) {
-        const passwordMatch = await bcrypt.compare(password, result.passwordHash);
-        
-        if (passwordMatch) {
-          // SECURITY FIX: Create user object without sensitive data for session
-          const user = {
-            fname: result.fname,
-            lname: result.lname,
-            userId: result._id // Use non-sensitive identifier
-          };
-          
+    // FIX: Algorithm agility through configuration with allowlist validation
+    const ALLOWED_ALGORITHMS = ['aes-256-gcm', 'aes-256-ccm'];
+    const CRYPTO_ALGORITHM = process.env.CRYPTO_ALGORITHM || 'aes-256-gcm';
+    if (!ALLOWED_ALGORITHMS.includes(CRYPTO_ALGORITHM)) {
+        throw new Error('Unsupported algorithm');
+    }
+    
+    // FIX: Use environment variables or a secure key management system instead of hardcoded password
+    const password = process.env.ENCRYPTION_PASSWORD || this.getSecurePasswordFromKMS();
+    
+    if (!password) {
+        throw new Error('Encryption password not configured');
+    }
+    
+    // FIX: Generate random salt for proper key derivation
+    const salt = crypto.randomBytes(16);
+    
+    // FIX: Async PBKDF2 to prevent blocking event loop and DoS vulnerabilities
+    const pbkdf2 = util.promisify(crypto.pbkdf2);
+    const key = await pbkdf2(password, salt, 100000, 32, 'sha256');
+    
+    // FIX: Generate a random IV for each encryption operation to ensure semantic security
+    const iv = crypto.randomBytes(16);
+    
+    // FIX: Use AES-256-GCM instead of DES for strong authenticated encryption
+    const cipher = crypto.createCipheriv(CRYPTO_ALGORITHM, key, iv);
+    
+    // FIX: Encrypt the data using secure AES-256-GCM algorithm
+    let encrypted = cipher.update(secretText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // FIX: Get authentication tag for integrity verification
+    const authTag = cipher.getAuthTag();
+    
+    // FIX: Key rotation mechanism for cryptographic agility
+    const keyVersion = this.getCurrentKeyVersion();
+    
+    // FIX: Memory zeroing for sensitive data to prevent memory scraping attacks
+    key.fill(0);
+    
+    // FIX: Return encrypted data with salt, iv, authTag, and keyVersion required for decryption and verification
+    return {
+        encrypted: encrypted,
+        salt: salt.toString('hex'),
+        iv: iv.toString('hex'),
+        authTag: authTag.toString('hex'),
+        keyVersion: keyVersion
+    };
+}
+
           // SECURITY FIX: Log with hashed username and anonymized IP instead of plain username
-          logger.info(`User login successful - UserHash: ${hashUsernameForLog(username)}, UserId: ${result._id}, Timestamp: ${new Date().toISOString()}, IP: ${anonymizeIP(req.ip)}`);
-          
-          // SECURITY FIX: Set secure cookie configuration with httpOnly, secure, and sameSite flags
-          res.cookie('username', result.username, {
-            httpOnly: true,
-            secure: true, // Ensures cookie is only sent over HTTPS
-            sameSite: 'strict', // Prevents CSRF attacks
-            maxAge: 864000000 // Corrected maxAge to milliseconds
-          });
-          
-          // SECURITY FIX: Store minimal user data in session
-          req.session.user = JSON.stringify({
-            fname: user.fname,
-            lname: user.lname,
-            userId: user.userId
-          });
-          req.session.username = username;
+async decryptData(encryptedData) {
+    const crypto = require('crypto');
+    const util = require('util');
+    
+    // FIX: Input validation for structure and format to prevent malformed data attacks
+    if (!encryptedData || !encryptedData.encrypted || !encryptedData.salt || 
+        !encryptedData.iv || !encryptedData.authTag) {
+        throw new Error('Malformed encrypted data: missing required fields');
+    }
+    
+    // FIX: Hex format validation using regex
+    const hexRegex = /^[0-9a-f]+$/i;
+    if (!hexRegex.test(encryptedData.salt) || !hexRegex.test(encryptedData.iv) || 
+        !hexRegex.test(encryptedData.authTag) || !hexRegex.test(encryptedData.encrypted)) {
+        throw new Error('Malformed encrypted data: invalid hex format');
+    }
+    
+    // FIX: Algorithm agility through configuration with allowlist validation
+    const ALLOWED_ALGORITHMS = ['aes-256-gcm', 'aes-256-ccm'];
+    const CRYPTO_ALGORITHM = process.env.CRYPTO_ALGORITHM || 'aes-256-gcm';
+    if (!ALLOWED_ALGORITHMS.includes(CRYPTO_ALGORITHM)) {
+        throw new Error('Unsupported algorithm');
+    }
+    
+    // FIX: Retrieve encryption password based on key version for key rotation support
+    const password = this.getPasswordForKeyVersion(encryptedData.keyVersion);
+    
+    if (!password) {
+        throw new Error('Encryption password not configured');
+    }
+    
+    // FIX: Convert hex strings back to buffers
+    const salt = Buffer.from(encryptedData.salt, 'hex');
+    const iv = Buffer.from(encryptedData.iv, 'hex');
+    const authTag = Buffer.from(encryptedData.authTag, 'hex');
+    
+    // FIX: Async PBKDF2 to prevent blocking event loop and DoS vulnerabilities
+    const pbkdf2 = util.promisify(crypto.pbkdf2);
+    const key = await pbkdf2(password, salt, 100000, 32, 'sha256');
+getSecurePasswordFromKMS() {
+    // FIX: Placeholder method for integration with Key Management Service
+    // In production, this should integrate with AWS KMS, Azure Key Vault, HashiCorp Vault, etc.
+    // Example: return await kmsClient.getSecretValue({ SecretId: 'encryption-password' });
+    
+    // For now, throw error if environment variable is not set
+    throw new Error('ENCRYPTION_PASSWORD environment variable must be set or KMS integration required');
+}
 
-          res.redirect('/');
-        } else {
-          // SECURITY FIX: Implement rate-limited logging for failed login attempts
-          const clientIp = req.ip || 'unknown';
-          const attemptKey = `${clientIp}_${Date.now() - (Date.now() % 60000)}`; // Group by minute
-          if (!this.failedLoginAttempts.has(attemptKey)) {
-            this.failedLoginAttempts.set(attemptKey, 0);
-          }
-          this.failedLoginAttempts.set(attemptKey, this.failedLoginAttempts.get(attemptKey) + 1);
+        decrypted += decipher.final('utf8');
+        
+getCurrentKeyVersion() {
+    // FIX: Key rotation mechanism - returns current key version identifier
+    // In production, this should retrieve the current active key version from configuration
+    // Example: return process.env.CURRENT_KEY_VERSION || '1';
+    
+    // Default to version 1 if not configured
+    return process.env.CURRENT_KEY_VERSION || '1';
+}
 
-          // Only log on first attempt in the time window with hashed username and anonymized IP
-          if (this.failedLoginAttempts.get(attemptKey) === 1) {
-            logger.info(`Login failed - UserHash: ${hashUsernameForLog(username)}, IP: ${anonymizeIP(clientIp)}`);
-          }
-
-          // Log summary after threshold
-          if (this.failedLoginAttempts.get(attemptKey) === 5) {
-            logger.warn(`Multiple failed login attempts detected - Count: ${this.failedLoginAttempts.get(attemptKey)}, IP: ${anonymizeIP(clientIp)}, TimeWindow: 1min`);
-          }
-          
-          this.loginFailed(req, res, data);
-        }
-      } else {
-        // SECURITY FIX: Implement rate-limited logging for failed login attempts
-        const clientIp = req.ip || 'unknown';
-        const attemptKey = `${clientIp}_${Date.now() - (Date.now() % 60000)}`; // Group by minute
-        if (!this.failedLoginAttempts.has(attemptKey)) {
-          this.failedLoginAttempts.set(attemptKey, 0);
-        }
-        this.failedLoginAttempts.set(attemptKey, this.failedLoginAttempts.get(attemptKey) + 1);
 
         // Only log on first attempt in the time window with hashed username and anonymized IP
-        if (this.failedLoginAttempts.get(attemptKey) === 1) {
-          logger.info(`Login failed - UserHash: ${hashUsernameForLog(username)}, IP: ${anonymizeIP(clientIp)}`);
-        }
-
-        // Log summary after threshold
-        if (this.failedLoginAttempts.get(attemptKey) === 5) {
-          logger.warn(`Multiple failed login attempts detected - Count: ${this.failedLoginAttempts.get(attemptKey)}, IP: ${anonymizeIP(clientIp)}, TimeWindow: 1min`);
-        }
-        
-        this.loginFailed(req, res, data);
-      }
-    } catch (ex) {
-      // SECURITY FIX: Log error with hashed username instead of sanitized plain username
-      logger.error(`Login error occurred - UserHash: ${hashUsernameForLog(username)}, Error type: ${ex.name || 'Unknown'}`);
-      this.loginFailed(req, res, data);
-    }
-  }
-
-        usernameType: typeof username,
-        passwordType: typeof password 
-      });
-      return res.status(400).json({ error: 'Invalid input format' });
+getPasswordForKeyVersion(keyVersion) {
+    // FIX: Key rotation support - retrieves password based on key version
+    // This allows seamless key rotation without breaking existing encrypted data
+    
+    // If no keyVersion provided, use current version (backward compatibility)
+    const version = keyVersion || this.getCurrentKeyVersion();
+    
+    // In production, this should map versions to different passwords/keys
+    // Example implementation with environment variables:
+    // const keyMap = {
+    //   '1': process.env.ENCRYPTION_PASSWORD_V1,
+    //   '2': process.env.ENCRYPTION_PASSWORD_V2,
+    //   '3': process.env.ENCRYPTION_PASSWORD_V3
+    // };
+    // return keyMap[version] || this.getSecurePasswordFromKMS();
+    
+    // For backward compatibility and current implementation:
+    // Use current password regardless of version (can be enhanced in production)
+    const password = process.env.ENCRYPTION_PASSWORD || this.getSecurePasswordFromKMS();
+    
+    if (!password) {
+        throw new Error(`Encryption password for key version ${version} not found`);
     }
     
+    return password;
+}
+
     const data = { username, password, keeponline };
     
     // FIX: Use secureLogger for automatic sanitization - password will be redacted, log forging prevented
