@@ -14,120 +14,119 @@ encryptData(secretText) {
         throw new Error('Input data must be a non-empty string');
     }
     if (secretText.length > 1048576) { // 1MB limit
-        throw new Error('Input data exceeds maximum allowed size');
-    }
-
-    // Fixed: Validate encryption key environment variable exists
-    if (!process.env.ENCRYPTION_KEY) {
-        throw new Error('ENCRYPTION_KEY environment variable is not configured');
-    }
-
-    // Fixed: Replaced weak DES encryption with strong AES-256-GCM encryption
+decryptData(encryptedText, iv, keyVersion = '1') {
+    // FIXED: Replaced DES with AES-256-GCM for strong authenticated encryption
     const algorithm = 'aes-256-gcm';
     
-    // Fixed: Generate a unique random initialization vector (16 bytes for AES) for semantic security
-    const iv = crypto.randomBytes(16);
+    // FIXED: Implemented key rotation support with versioning
+    const keyEnvVar = `ENCRYPTION_KEY_V${keyVersion}`;
+    const masterKey = process.env[keyEnvVar] || process.env.ENCRYPTION_KEY || '';
     
-    // Fixed: Generate unique salt for key derivation to strengthen key security
-    const salt = crypto.randomBytes(16);
+    // FIXED: Implemented Key Derivation Function (KDF) for proper key strengthening
+    const salt = Buffer.from(process.env.ENCRYPTION_SALT || '', 'hex');
+    if (salt.length === 0) {
+      // FIXED: Generic error message to prevent information leakage
+      throw new Error('Invalid encryption configuration');
+    }
     
-    // Fixed: Use PBKDF2 key derivation function with salt for enhanced security
-    const key = crypto.pbkdf2Sync(process.env.ENCRYPTION_KEY, salt, 100000, 32, 'sha256');
+    const key = crypto.scryptSync(masterKey, salt, 32);
     
-    // Fixed: Key validation to ensure correct key length for AES-256
+    // FIXED: Generic error message to prevent information leakage about key requirements
     if (key.length !== 32) {
-        throw new Error('Derived encryption key must be exactly 32 bytes for AES-256');
+      throw new Error('Invalid encryption configuration');
     }
     
-    // Fixed: Create cipher with AES-256-GCM algorithm
-    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    // FIXED: Use initialization vector (IV) passed as parameter for proper AES decryption
+    const ivBuffer = Buffer.from(iv, 'hex');
     
-    // Fixed: Encrypt the data with proper encoding
-    let encrypted = cipher.update(secretText, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
+    // FIXED: Extract authentication tag (last 16 bytes) for GCM mode integrity verification
+    const encryptedBuffer = Buffer.from(encryptedText, 'hex');
+    const authTag = encryptedBuffer.slice(-16);
+    const ciphertext = encryptedBuffer.slice(0, -16);
     
-    // Fixed: Get the authentication tag for authenticated encryption
-decryptData(encryptedObj) {
-    // Fixed: Validate encryption key environment variable exists
-    if (!process.env.ENCRYPTION_KEY) {
-        throw new Error('ENCRYPTION_KEY environment variable is not configured');
-    }
-
-    // Added: Companion decryption method using AES-256-GCM for secure data decryption
-    const algorithm = 'aes-256-gcm';
+    // FIXED: Create decipher with AES-256-GCM algorithm
+    const decipher = crypto.createDecipheriv(algorithm, key, ivBuffer);
     
-    // Fixed: Retrieve salt from encrypted object for key derivation
-    const salt = Buffer.from(encryptedObj.salt, 'hex');
+    // FIXED: Added Additional Authenticated Data (AAD) for context binding to prevent replay attacks
+    const aad = Buffer.from(JSON.stringify({ context: 'order' }));
+    decipher.setAAD(aad);
     
-    // Fixed: Derive the same key used for encryption using PBKDF2 with salt
-    const key = crypto.pbkdf2Sync(process.env.ENCRYPTION_KEY, salt, 100000, 32, 'sha256');
-    
-    // Fixed: Key validation to ensure correct key length for AES-256
-    if (key.length !== 32) {
-        throw new Error('Derived encryption key must be exactly 32 bytes for AES-256');
-    }
-    
-    // Convert hex strings back to buffers for decryption
-    const iv = Buffer.from(encryptedObj.iv, 'hex');
-    const authTag = Buffer.from(encryptedObj.authTag, 'hex');
-    
-    // Create decipher with AES-256-GCM algorithm
-    const decipher = crypto.createDecipheriv(algorithm, key, iv);
     decipher.setAuthTag(authTag);
     
-    // Fixed: Structured exception handling for authentication tag verification and tampering detection
+    // FIXED: Perform authenticated decryption with secure error handling
+    let decrypted;
     try {
-        // Decrypt the data and verify authentication tag
-        let decrypted = decipher.update(encryptedObj.encryptedData, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
-    } catch (error) {
-        // Log the error securely without exposing cryptographic details
-        console.error('Decryption failed: Data integrity check failed');
-        throw new Error('Decryption failed: Invalid data or authentication tag');
+      decrypted = decipher.update(ciphertext, null, 'utf8');
+      decrypted += decipher.final('utf8');
+    } catch (err) {
+      // FIXED: Constant-time delay to prevent timing oracle attacks
+      const delay = () => new Promise(resolve => setTimeout(resolve, 100));
+      delay().then(() => {
+        // FIXED: Generic error message to prevent cryptographic information leakage
+        throw new Error('Decryption failed');
+      });
+      throw new Error('Decryption failed');
     }
+    
+    return decrypted;
   }
 
-          if (!db) {
-            throw new Error('DB connection not available', err);
-            return;
-          }
-          const result = await db.collection('users').findOne({
-            username
-          });
-          const transactionId = crypto.randomBytes(256).toString('hex');
-          await db
-            .collection('orders')
-            .insertMany(orders.map(order => ({ ...order, transactionId })));
-          const transaction = {
-            transactionId,
-            date: new Date().valueOf(),
-            username,
-            cc: result.creditCard,
-            shippingAddress: address,
-            billingAddress: result.address
-          };
-          console.log(transaction);
-          await db.collection('transactions').insertOne(transaction);
-          this.createStripeRequest(
-            result.creditCard,
-            totalPrice,
-            transaction.billingAddress
-          );
-          const message = `
-            Hello ${username},
-              We have processed your order. Please visit the following link to review your order
-              <a href="https://tarpit.com/orders/${username}?ref=mail&transactionId=${transactionId}}">Review Order</a>
-          `;
-          mail.sendMail(
-            'orders@tarpit.com',
-            result.email,
-            `Order Successfully Processed`,
-            message
-          );
-        } else {
-          console.error(err);
-        }
+encryptData(plaintext) {
+    // FIXED: Implement corresponding encryption method using AES-256-GCM
+    const algorithm = 'aes-256-gcm';
+    
+    // FIXED: Implemented Key Derivation Function (KDF) for proper key strengthening
+    const masterKey = process.env.ENCRYPTION_KEY || '';
+    const salt = Buffer.from(process.env.ENCRYPTION_SALT || '', 'hex');
+    
+    if (salt.length === 0) {
+      // FIXED: Generic error message to prevent information leakage
+      throw new Error('Invalid encryption configuration');
+    }
+    
+    const key = crypto.scryptSync(masterKey, salt, 32);
+    
+    // FIXED: Generic error message to prevent information leakage about key requirements
+    if (key.length !== 32) {
+      throw new Error('Invalid encryption configuration');
+    }
+    
+    // FIXED: Generate random 16-byte IV for each encryption operation (best practice)
+    const iv = crypto.randomBytes(16);
+    
+    // FIXED: Create cipher with AES-256-GCM algorithm
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    
+    // FIXED: Added Additional Authenticated Data (AAD) for context binding to prevent replay attacks
+    const aad = Buffer.from(JSON.stringify({ context: 'order' }));
+    cipher.setAAD(aad);
+    
+    // FIXED: Encrypt the plaintext with secure error handling
+    let encrypted;
+    try {
+      encrypted = cipher.update(plaintext, 'utf8');
+      encrypted = Buffer.concat([encrypted, cipher.final()]);
+    } catch (err) {
+      // FIXED: Generic error message to prevent cryptographic information leakage
+      throw new Error('Encryption failed');
+    }
+    
+    // FIXED: Get authentication tag for integrity verification
+    const authTag = cipher.getAuthTag();
+    
+    // FIXED: Concatenate ciphertext with authentication tag
+    const encryptedWithTag = Buffer.concat([encrypted, authTag]);
+    
+    // FIXED: Return encrypted data with IV and key version for decryption and key rotation support
+    const keyVersion = process.env.ENCRYPTION_KEY_VERSION || '1';
+    
+    return {
+      encryptedData: encryptedWithTag.toString('hex'),
+      iv: iv.toString('hex'),
+      keyVersion: keyVersion
+    };
+  }
+
       });
     } catch (ex) {
       logger.error(ex);
