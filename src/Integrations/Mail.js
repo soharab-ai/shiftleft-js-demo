@@ -1,13 +1,19 @@
-const FormData = require('form-data');
-const fs = require('fs');
-const axios = require('axios');
-class Mail {
-  constructor(
-    host = 'https://api.mailgun.net',
-    domain,
-    username = 'api',
-    apiKey
-  ) {
+// FIX: Implemented structured logging with automatic redaction for sensitive data
+const createLogger = () => {
+  return winston.createLogger({
+    level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+    format: winston.format.json(),
+    transports: [
+      new winston.transports.Console({
+        format: winston.format.simple()
+      })
+    ],
+    // Automatically redact sensitive fields
+    redact: ['apiKey', 'password', 'token', 'secret', 'authorization', 'auth']
+  });
+};
+const logger = createLogger();
+
     this.axiosClient = axios.create({
       baseURL: `${host}/v3/${domain}`,
       timeout: 120000,
@@ -16,9 +22,19 @@ class Mail {
         password: apiKey
       }
     });
-    console.log(
-      `Connecting to mail host: ${host}:${domain} with login ${username}/${apiKey}`
-    );
+
+    // FIX: Implemented environment-based logging controls with structured logging
+    // Only log in non-production environments with boolean indicators instead of actual values
+    if (process.env.NODE_ENV !== 'production') {
+      logger.info('Mail service initialized', {
+        host: host,
+        domain: domain,
+        username: username,
+        hasApiKey: !!apiKey
+      });
+    }
+  }
+
   }
 
   sendMail(fromAddress, toAddress, subject, msg) {
