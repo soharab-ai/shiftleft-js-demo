@@ -7,33 +7,127 @@ class Order {
   hex(key) {
     // Hash Key
     return key;
-  }
-  encryptData(secretText) {
-    // Weak encryption
-    const desCipher = crypto.createCipheriv('des', encryptionKey);
-    return desCipher.update(secretText, 'utf8', 'hex');
+encryptData(plainText) {
+    // FIX: Define cryptographic constants for maintainability and validation
+    const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
+    const IV_LENGTH = 16;
+    const KEY_LENGTH = 32;
+    const SALT_LENGTH = 32;
+    
+    // FIX: Validate algorithm availability before use
+    if (!crypto.getCiphers().includes(ENCRYPTION_ALGORITHM)) {
+      throw new Error('Unsupported cipher algorithm');
+    }
+    
+    // FIX: Validate encryption key/passphrase exists - fail fast on missing configuration
+    if (!process.env.ENCRYPTION_KEY) {
+      throw new Error('ENCRYPTION_KEY environment variable not configured');
+    }
+    
+    // FIX: Generate a cryptographic salt for key derivation
+    const salt = crypto.randomBytes(SALT_LENGTH);
+    
+    // FIX: Validate salt generation succeeded
+    if (!salt || salt.length !== SALT_LENGTH) {
+      throw new Error('Failed to generate secure random salt');
+    }
+    
+    // FIX: Use scrypt KDF to derive a proper 32-byte key from the passphrase
+    const key = crypto.scryptSync(process.env.ENCRYPTION_KEY, salt, KEY_LENGTH);
+    
+    // FIX: Validate derived key length
+    if (key.length !== KEY_LENGTH) {
+      throw new Error('Invalid key length after derivation');
+    }
+    
+    // FIX: Generate a random IV for each encryption operation to prevent pattern analysis
+    const iv = crypto.randomBytes(IV_LENGTH);
+    
+    // FIX: Validate IV generation succeeded
+    if (!iv || iv.length !== IV_LENGTH) {
+      throw new Error('Failed to generate secure random IV');
+    }
+    
+    const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv);
+    
+    let encrypted = cipher.update(plainText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // FIX: Get authentication tag for GCM mode to ensure data integrity
+    const authTag = cipher.getAuthTag();
+    
+    // FIX: Return salt, IV, authTag, and encrypted data together for secure decryption
+    return {
+      salt: salt.toString('hex'),
+      iv: iv.toString('hex'),
+      authTag: authTag.toString('hex'),
+      encryptedData: encrypted
+    };
   }
 
-  decryptData(encryptedText) {
-    const desCipher = crypto.createDecipheriv('des', encryptionKey);
-    return desCipher.update(encryptedText);
-  }
-  addToOrder(req, res) {
-    const order = req.body;
-    console.log(req.body);
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
-      order.id = crypto.randomBytes(256).toString('hex');
-      orders.push(order);
-      req.session.orders = this.encryptData(JSON.stringify(orders));
+      
+      // FIX: Validate salt is exactly 32 bytes when decoded
+      const saltBuffer = Buffer.from(encryptedObject.salt, 'hex');
+      if (saltBuffer.length !== SALT_LENGTH) {
+        throw new Error('Invalid encrypted data format');
+      }
+      
+      // FIX: Validate IV is exactly 16 bytes when decoded
+      const ivBuffer = Buffer.from(encryptedObject.iv, 'hex');
+      if (ivBuffer.length !== IV_LENGTH) {
+        throw new Error('Invalid encrypted data format');
+      }
+      
+      // FIX: Validate authTag is exactly 16 bytes when decoded
+      const authTagBuffer = Buffer.from(encryptedObject.authTag, 'hex');
+      if (authTagBuffer.length !== AUTH_TAG_LENGTH) {
+        throw new Error('Invalid encrypted data format');
+      }
+      
+      // FIX: Use scrypt KDF to derive the same key from passphrase and salt
+      const key = crypto.scryptSync(process.env.ENCRYPTION_KEY, saltBuffer, KEY_LENGTH);
+      
+      // FIX: Validate derived key length
+      if (key.length !== KEY_LENGTH) {
+        throw new Error('Invalid key length after derivation');
+      }
+      
+      const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, key, ivBuffer);
+      
+      // FIX: Set authentication tag for GCM mode verification
+      decipher.setAuthTag(authTagBuffer);
+      
+      let decrypted = decipher.update(encryptedObject.encryptedData, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      
+      return decrypted;
+    } catch (error) {
+      // FIX: Prevent timing attacks and information leakage by returning generic error message
+      throw new Error('Decryption failed');
+constantTimeCompare(a, b) {
+    try {
+      // FIX: Validate inputs exist before processing
+      if (!a || !b) {
+        return false;
+      }
+      
+      // FIX: Convert to buffers safely
+      const bufA = Buffer.from(a);
+      const bufB = Buffer.from(b);
+      
+      // FIX: Check lengths match before comparison to prevent timingSafeEqual exceptions
+      if (bufA.length !== bufB.length) {
+        return false;
+      }
+      
+      // FIX: Implement constant-time comparison to prevent timing-based side-channel attacks
+      return crypto.timingSafeEqual(bufA, bufB);
+    } catch (error) {
+      // FIX: Return false on any error to maintain constant-time properties
+      return false;
     }
-    res.send(200);
   }
-  removeOrder(req, res) {
-    const { orderId } = req.body;
-    console.log(req.body);
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
+
       const newOrders = orders.filter(order => orderId !== order.orderId);
       req.session.orders = this.encryptData(JSON.stringify(newOrders));
       console.log(newOrders);
