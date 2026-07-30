@@ -1,40 +1,57 @@
 const crypto = require('crypto');
 const https = require('https');
 const mail = require('../Integrations/Mail');
+// FIX: Load encryption key once from secure environment variable at module initialization
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY ? Buffer.from(process.env.ENCRYPTION_KEY, 'hex') : null;
 
-const encryptionKey = "This is a simple key, don't guess it";
-class Order {
-  hex(key) {
-    // Hash Key
-    return key;
-  }
-  encryptData(secretText) {
-    // Weak encryption
-    const desCipher = crypto.createCipheriv('des', encryptionKey);
-    return desCipher.update(secretText, 'utf8', 'hex');
-  }
+// FIX: Validate that encryption key exists and has correct length (32 bytes for AES-256)
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 32) {
+    throw new Error('ENCRYPTION_KEY must be set as a 64-character hex string (32 bytes)');
+}
 
-  decryptData(encryptedText) {
-    const desCipher = crypto.createDecipheriv('des', encryptionKey);
-    return desCipher.update(encryptedText);
-  }
-  addToOrder(req, res) {
-    const order = req.body;
-    console.log(req.body);
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
-      order.id = crypto.randomBytes(256).toString('hex');
-      orders.push(order);
-      req.session.orders = this.encryptData(JSON.stringify(orders));
-    }
-    res.send(200);
-  }
-  removeOrder(req, res) {
-    const { orderId } = req.body;
-    console.log(req.body);
-    if (req.session.orders) {
-      const orders = JSON.parse(this.decryptData(req.session.orders));
-      const newOrders = orders.filter(order => orderId !== order.orderId);
+encryptData(secretText) {
+    // FIX: Use AES-256-GCM for strong cryptographic security (replacing weak DES)
+    const algorithm = 'aes-256-gcm';
+    
+    // FIX: Use the securely loaded encryption key from module-level constant instead of generating new key per operation
+    const key = ENCRYPTION_KEY;
+    
+    // FIX: Generate a random initialization vector for each encryption operation
+    const iv = crypto.randomBytes(16); // 16-byte IV for GCM mode
+    
+    // FIX: Create cipher using AES-256-GCM algorithm with secure key and IV
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    
+    // FIX: Encrypt the data
+    let encrypted = cipher.update(secretText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // FIX: Get authentication tag for authenticated encryption (prevents tampering)
+    const authTag = cipher.getAuthTag();
+decryptData(encryptedData) {
+    // FIX: Use AES-256-GCM for decryption to complement secure encryption implementation
+    const algorithm = 'aes-256-gcm';
+    
+    // FIX: Use the same securely loaded encryption key from module-level constant
+    const key = ENCRYPTION_KEY;
+    
+    // FIX: Convert hex strings back to buffers
+    const iv = Buffer.from(encryptedData.iv, 'hex');
+    const authTag = Buffer.from(encryptedData.authTag, 'hex');
+    
+    // FIX: Create decipher with AES-256-GCM
+    const decipher = crypto.createDecipheriv(algorithm, key, iv);
+    
+    // FIX: Set authentication tag for verification (ensures data integrity)
+    decipher.setAuthTag(authTag);
+    
+    // FIX: Decrypt the data
+    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+}
+
       req.session.orders = this.encryptData(JSON.stringify(newOrders));
       console.log(newOrders);
     }
